@@ -1,0 +1,15 @@
+default_host = "devbox"
+
+[[hosts]]
+name = "devbox"
+match_hosts = ["devbox", "devbox.example.com"]
+
+[[hosts.routes]]
+name = "lan"
+ssh_target = "devbox-lan"
+priority = 10
+
+[[hosts.routes]]
+name = "public"
+ssh_target = "devbox-public"
+priority = 20
