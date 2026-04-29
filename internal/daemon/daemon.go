@@ -73,10 +73,9 @@ func NewServer(cfg *config.Config) *Server {
 }
 
 func (s *Server) Listen(socketPath string) error {
-	if err := os.MkdirAll(filepath.Dir(socketPath), 0o700); err != nil {
+	if err := prepareUnixSocket(socketPath); err != nil {
 		return err
 	}
-	_ = os.Remove(socketPath)
 	ln, err := net.Listen("unix", socketPath)
 	if err != nil {
 		return err
@@ -89,6 +88,23 @@ func (s *Server) Listen(socketPath string) error {
 		}
 		go s.handleConn(conn)
 	}
+}
+
+func prepareUnixSocket(socketPath string) error {
+	if err := os.MkdirAll(filepath.Dir(socketPath), 0o700); err != nil {
+		return err
+	}
+	conn, err := net.DialTimeout("unix", socketPath, 100*time.Millisecond)
+	if err == nil {
+		_ = conn.Close()
+		return fmt.Errorf("daemon socket already in use: %s", socketPath)
+	}
+	if !errors.Is(err, os.ErrNotExist) {
+		if removeErr := os.Remove(socketPath); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
+			return removeErr
+		}
+	}
+	return nil
 }
 
 func (s *Server) handleConn(conn net.Conn) {

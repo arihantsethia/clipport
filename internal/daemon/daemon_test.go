@@ -2,6 +2,9 @@ package daemon
 
 import (
 	"errors"
+	"net"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -36,6 +39,46 @@ type fakePaster struct {
 func (f *fakePaster) Paste() error {
 	f.called = true
 	return f.err
+}
+
+func TestPrepareUnixSocketKeepsLiveSocket(t *testing.T) {
+	socketPath := shortSocketPath(t)
+	ln, err := net.Listen("unix", socketPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+
+	if err := prepareUnixSocket(socketPath); err == nil {
+		t.Fatal("expected live socket to be preserved")
+	}
+	if _, err := os.Stat(socketPath); err != nil {
+		t.Fatalf("live socket was removed: %v", err)
+	}
+}
+
+func TestPrepareUnixSocketRemovesStaleSocket(t *testing.T) {
+	socketPath := shortSocketPath(t)
+	if err := os.WriteFile(socketPath, []byte("stale"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := prepareUnixSocket(socketPath); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(socketPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("stale socket still exists: %v", err)
+	}
+}
+
+func shortSocketPath(t *testing.T) string {
+	t.Helper()
+	dir, err := os.MkdirTemp(os.TempDir(), "wbsock-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	return filepath.Join(dir, "d.sock")
 }
 
 func TestPasteReturnsRemotePNGPath(t *testing.T) {

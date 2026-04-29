@@ -2,12 +2,15 @@ package main
 
 import (
 	_ "embed"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/arihantsethia/clipport/internal/config"
@@ -25,6 +28,8 @@ const maxHostMenuItems = 8
 const maxRecentTransferItems = 4
 
 var activeApp *trayApp
+
+type appRunner func()
 
 type appPaths struct {
 	configPath string
@@ -54,7 +59,44 @@ type trayApp struct {
 }
 
 func main() {
-	systray.Run(onReady, onExit)
+	os.Exit(run(os.Args, os.Stdout, os.Stderr, func() {
+		systray.Run(onReady, onExit)
+	}))
+}
+
+func run(args []string, stdout, stderr io.Writer, start appRunner) int {
+	if len(args) > 1 {
+		fmt.Fprintln(stderr, "clipport: use clipctl paste")
+		return 2
+	}
+	lock, err := acquireAppLock()
+	if err != nil {
+		if !errors.Is(err, syscall.EWOULDBLOCK) {
+			fmt.Fprintf(stderr, "clipport: %v\n", err)
+			return 1
+		}
+		return 0
+	}
+	defer lock.Close()
+	start()
+	return 0
+}
+
+func acquireAppLock() (*os.File, error) {
+	dir := filepath.Join(os.TempDir(), "clipport", fmt.Sprint(os.Getuid()))
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return nil, err
+	}
+	lockPath := filepath.Join(dir, "clipport.lock")
+	file, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return nil, err
+	}
+	if err := syscall.Flock(int(file.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		_ = file.Close()
+		return nil, err
+	}
+	return file, nil
 }
 
 func onReady() {
