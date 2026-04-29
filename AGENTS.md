@@ -1,6 +1,6 @@
 # Agent Notes
 
-- Keep `clipport paste` stdout path-only for remote image success; remote text
+- Keep `clipctl paste` stdout path-only for remote image success; remote text
   success writes the text directly to stdout.
 - Keep remote paths under `/tmp/clipport/...`.
 - Do not add config knobs without a real usage need.

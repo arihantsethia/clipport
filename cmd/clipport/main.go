@@ -1,455 +1,345 @@
 package main
 
 import (
-	"flag"
+	_ "embed"
 	"fmt"
-	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
-	"strconv"
+	"runtime"
+	"strings"
+	"time"
 
 	"github.com/arihantsethia/clipport/internal/config"
 	"github.com/arihantsethia/clipport/internal/daemon"
 	"github.com/arihantsethia/clipport/internal/doctor"
-	"github.com/arihantsethia/clipport/internal/onboard"
-	"github.com/arihantsethia/clipport/internal/shims"
-	"github.com/arihantsethia/clipport/internal/shimsetup"
-	"github.com/arihantsethia/clipport/internal/sshsetup"
-	"github.com/arihantsethia/clipport/internal/testpaste"
-	"github.com/arihantsethia/clipport/internal/token"
-	"github.com/arihantsethia/clipport/internal/uninstall"
+	"github.com/arihantsethia/clipport/internal/menu"
+	"github.com/getlantern/systray"
 )
 
+//go:embed assets/icon.png
+var templateIconPNG []byte
+
+const refreshEvery = 5 * time.Second
+const maxHostMenuItems = 8
+const maxRecentTransferItems = 4
+
+var activeApp *trayApp
+
+type appPaths struct {
+	configPath string
+	daemonPath string
+	httpAddr   string
+	outLog     string
+	errLog     string
+}
+
+type trayApp struct {
+	paths      appPaths
+	controller *menu.DaemonProcess
+
+	statusItem  *systray.MenuItem
+	detailItem  *systray.MenuItem
+	hostsMenu   *systray.MenuItem
+	hostItems   []*systray.MenuItem
+	recent      []*systray.MenuItem
+	restartItem *systray.MenuItem
+	doctorItem  *systray.MenuItem
+	reportItem  *systray.MenuItem
+	configItem  *systray.MenuItem
+	logsItem    *systray.MenuItem
+	quitItem    *systray.MenuItem
+
+	lastReport string
+}
+
 func main() {
-	socketPath := flag.String("socket", daemon.DefaultSocketPath(), "unix socket path")
-	debug := flag.Bool("debug", false, "print detailed paste diagnostics")
-	flag.Parse()
+	systray.Run(onReady, onExit)
+}
 
-	if flag.NArg() < 1 {
-		usage()
-		os.Exit(2)
+func onReady() {
+	systray.SetTemplateIcon(templateIconPNG, templateIconPNG)
+	systray.SetTooltip("Clipport")
+
+	app := newTrayApp()
+	activeApp = app
+	app.buildMenu()
+	if err := app.controller.Start(); err != nil {
+		app.setError(err)
+	} else {
+		app.refresh()
 	}
-	cmd := flag.Arg(0)
-	switch cmd {
-	case "paste":
-		resp, err := daemon.Send(*socketPath, daemon.Request{Command: "paste", SessionKey: sessionKeyFromEnv()})
-		if err != nil {
-			fmt.Fprintln(os.Stderr, pasteErrorMessage(resp, err, *debug))
-			os.Exit(1)
+	go app.loop()
+}
+
+func onExit() {
+	if activeApp == nil {
+		return
+	}
+	_ = activeApp.controller.Stop()
+}
+
+func newTrayApp() *trayApp {
+	paths := loadPaths()
+	return &trayApp{
+		paths: paths,
+		controller: &menu.DaemonProcess{
+			BinPath:    paths.daemonPath,
+			ConfigPath: paths.configPath,
+			HTTPAddr:   paths.httpAddr,
+			OutLogPath: paths.outLog,
+			ErrLogPath: paths.errLog,
+		},
+	}
+}
+
+func loadPaths() appPaths {
+	binDir := defaultBinDir()
+	paths := appPaths{
+		configPath: doctor.DefaultConfigPath(),
+		daemonPath: filepath.Join(binDir, "clipportd"),
+		httpAddr:   "127.0.0.1:18765",
+		outLog:     "/tmp/clipportd.out.log",
+		errLog:     "/tmp/clipportd.err.log",
+	}
+	if local, err := config.LoadLocalBestEffort(paths.configPath); err == nil {
+		if local.BinDir != "" {
+			paths.daemonPath = filepath.Join(local.BinDir, "clipportd")
 		}
-		if output := pasteOutput(resp); output != "" {
-			fmt.Print(output)
+		if local.HTTPAddr != "" {
+			paths.httpAddr = local.HTTPAddr
 		}
-	case "session":
-		if flag.NArg() < 2 || flag.Arg(1) != "register" {
-			fmt.Fprintln(os.Stderr, "usage: clipport [--socket path] session register --machine name [--session-key key] [--ssh-alias alias] [--ssh-host host] [--ssh-port port] [--ssh-user user]")
-			os.Exit(2)
-		}
-		registerSession(*socketPath, flag.Args()[2:], false)
-	case "register-session":
-		registerSession(*socketPath, flag.Args()[1:], true)
-	case "status":
-		resp, err := daemon.Send(*socketPath, daemon.Request{Command: "status"})
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "clipport: %v\n", err)
-			os.Exit(1)
-		}
-		fmt.Printf("hosts: %v\n", resp.Status.ConfigHosts)
-		fmt.Printf("registered sessions: %d\n", resp.Status.Registered)
-		for _, b := range resp.Status.RecentBindings {
-			fmt.Printf("binding %s %s", b.CreatedAt, b.Machine)
-			if b.SSHAlias != "" {
-				fmt.Printf(" alias=%s", b.SSHAlias)
+	}
+	return paths
+}
+
+func defaultBinDir() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(home, ".local", "bin")
+}
+
+func (a *trayApp) buildMenu() {
+	a.statusItem = systray.AddMenuItem("Clipport: Checking", "Clipport daemon status")
+	a.statusItem.Disable()
+	a.detailItem = systray.AddMenuItem("", "Status detail")
+	a.detailItem.Disable()
+	a.detailItem.Hide()
+	a.hostsMenu = systray.AddMenuItem("Hosts", "Configured hosts")
+	for range maxHostMenuItems {
+		item := a.hostsMenu.AddSubMenuItem("", "Configured host")
+		item.Disable()
+		item.Hide()
+		a.hostItems = append(a.hostItems, item)
+	}
+
+	systray.AddSeparator()
+	recentHeader := systray.AddMenuItem("Recent Transfers", "Recent transfers")
+	recentHeader.Disable()
+	for range maxRecentTransferItems {
+		item := systray.AddMenuItem("", "Recent transfer")
+		item.Disable()
+		item.Hide()
+		a.recent = append(a.recent, item)
+	}
+
+	systray.AddSeparator()
+	a.doctorItem = systray.AddMenuItem("Run Doctor", "Run Clipport health checks")
+	a.reportItem = systray.AddMenuItem("Open Doctor Report", "Open the last doctor report")
+	a.reportItem.Disable()
+	a.reportItem.Hide()
+	a.configItem = systray.AddMenuItem("Open Config", "Open Clipport config")
+	a.logsItem = systray.AddMenuItem("Open Logs", "Open Clipport daemon logs")
+
+	systray.AddSeparator()
+	a.restartItem = systray.AddMenuItem("Restart", "Restart Clipport")
+	a.quitItem = systray.AddMenuItem("Quit", "Quit Clipport and stop the daemon")
+}
+
+func (a *trayApp) loop() {
+	ticker := time.NewTicker(refreshEvery)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ticker.C:
+			a.refresh()
+		case <-a.restartItem.ClickedCh:
+			a.setAction("Restarting")
+			if err := a.controller.Restart(); err != nil {
+				a.setError(err)
+			} else {
+				a.refresh()
 			}
-			if b.SSHHost != "" {
-				fmt.Printf(" host=%s", b.SSHHost)
-			}
-			if b.SSHPort != "" {
-				fmt.Printf(" port=%s", b.SSHPort)
-			}
-			if b.SSHUser != "" {
-				fmt.Printf(" user=%s", b.SSHUser)
-			}
-			fmt.Println()
-		}
-		for _, t := range resp.Status.Recent {
-			fmt.Printf("%s %s/%s %d bytes %s\n", t.CreatedAt, t.Host, t.Route, t.Bytes, t.Path)
-		}
-	case "doctor":
-		doctorCmd := flag.NewFlagSet("doctor", flag.ExitOnError)
-		configPath := doctorCmd.String("config", doctor.DefaultConfigPath(), "clipport config path")
-		_ = doctorCmd.Parse(flag.Args()[1:])
-		doctor.Print(doctor.Run(*configPath, *socketPath))
-	case "test-paste":
-		testCmd := flag.NewFlagSet("test-paste", flag.ExitOnError)
-		configPath := testCmd.String("config", doctor.DefaultConfigPath(), "clipport config path")
-		hostName := testCmd.String("host", "", "logical host name")
-		_ = testCmd.Parse(flag.Args()[1:])
-		cfg, err := config.Load(*configPath)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "clipport: %v\n", err)
-			os.Exit(1)
-		}
-		result, err := testpaste.Run(cfg, *hostName)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "clipport: %v\n", err)
-			os.Exit(1)
-		}
-		testpaste.Print(result)
-	case "ssh":
-		handleSSHCommand(flag.Args()[1:])
-	case "shims":
-		if flag.NArg() < 2 {
-			shimsUsage()
-			os.Exit(2)
-		}
-		switch flag.Arg(1) {
-		case "install":
-			shimCmd := flag.NewFlagSet("shims install", flag.ExitOnError)
-			target := shimCmd.String("target", "", "SSH target")
-			tokenPath := shimCmd.String("token", token.DefaultPath(), "token path")
-			port := shimCmd.Int("port", installedRemotePort(), "remote forward port")
-			_ = shimCmd.Parse(flag.Args()[2:])
-			bearer, err := token.LoadOrCreate(*tokenPath)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "clipport: %v\n", err)
-				os.Exit(1)
-			}
-			if err := shims.Install(*target, bearer, *port); err != nil {
-				fmt.Fprintf(os.Stderr, "clipport: %v\n", err)
-				os.Exit(1)
-			}
-			fmt.Printf("installed shims on %s\n", *target)
-		case "setup":
-			setupCmd := flag.NewFlagSet("shims setup", flag.ExitOnError)
-			host := setupCmd.String("host", "", "logical host name")
-			configPath := setupCmd.String("config", doctor.DefaultConfigPath(), "clipport config path")
-			sshConfig := setupCmd.String("ssh-config", sshsetup.DefaultSSHConfigPath(), "ssh config path")
-			tokenPath := setupCmd.String("token", token.DefaultPath(), "token path")
-			port := setupCmd.Int("port", installedRemotePort(), "remote forward port")
-			_ = setupCmd.Parse(flag.Args()[2:])
-			result, err := shimsetup.Setup(*configPath, *host, *sshConfig, *tokenPath, *port)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "clipport: %v\n", err)
-				os.Exit(1)
-			}
-			fmt.Printf("machine %s\n", result.Machine)
-			for _, route := range result.Routes {
-				fmt.Printf("- %s / %s: forward %s; shims installed\n", route.Name, route.Target, route.ForwardStatus)
-			}
-		case "uninstall":
-			uninstallCmd := flag.NewFlagSet("shims uninstall", flag.ExitOnError)
-			host := uninstallCmd.String("host", "", "logical host name")
-			configPath := uninstallCmd.String("config", doctor.DefaultConfigPath(), "clipport config path")
-			sshConfig := uninstallCmd.String("ssh-config", sshsetup.DefaultSSHConfigPath(), "ssh config path")
-			removeRemoteToken := uninstallCmd.Bool("remove-remote-token", false, "delete remote ~/.config/clipport/token")
-			_ = uninstallCmd.Parse(flag.Args()[2:])
-			result, err := shimsetup.Uninstall(*configPath, *host, *sshConfig, *removeRemoteToken)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "clipport: %v\n", err)
-				os.Exit(1)
-			}
-			fmt.Printf("machine %s\n", result.Machine)
-			for _, route := range result.Routes {
-				fmt.Printf("- %s / %s: forward %s; shims removed\n", route.Name, route.Target, route.ForwardStatus)
-			}
-		default:
-			shimsUsage()
-			os.Exit(2)
-		}
-	case "uninstall":
-		uninstallCmd := flag.NewFlagSet("uninstall", flag.ExitOnError)
-		binDir := uninstallCmd.String("bin-dir", "", "directory containing clipport binaries; defaults to current executable directory")
-		sshConfig := uninstallCmd.String("ssh-config", "", "ssh config path")
-		manifestPath := uninstallCmd.String("manifest", uninstall.DefaultManifestPath(), "install manifest path")
-		removeData := uninstallCmd.Bool("remove-data", false, "delete local config, cache, token, and temp files")
-		keepIterm := uninstallCmd.Bool("keep-iterm", false, "leave matching clipport iTerm hotkey in place")
-		dryRun := uninstallCmd.Bool("dry-run", false, "print planned actions without changing files")
-		_ = uninstallCmd.Parse(flag.Args()[1:])
-		keepItermSet := false
-		uninstallCmd.Visit(func(f *flag.Flag) {
-			if f.Name == "keep-iterm" {
-				keepItermSet = true
-			}
-		})
-		result, err := uninstall.Run(uninstall.Options{
-			BinDir:         *binDir,
-			SSHConfig:      *sshConfig,
-			ManifestPath:   *manifestPath,
-			RemoveData:     *removeData,
-			RemoveIterm:    !*keepIterm,
-			RemoveItermSet: keepItermSet,
-			DryRun:         *dryRun,
-		})
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "clipport: %v\n", err)
-			os.Exit(1)
-		}
-		for _, action := range result.Actions {
-			fmt.Println(action)
-		}
-	case "onboard":
-		onboardCmd := flag.NewFlagSet("onboard", flag.ExitOnError)
-		sshConfig := onboardCmd.String("ssh-config", onboard.DefaultSSHConfigPath(), "ssh config path")
-		output := onboardCmd.String("output", onboard.DefaultConfigPath(), "clipport config path")
-		list := onboardCmd.Bool("list", false, "list SSH hosts and exit")
-		_ = onboardCmd.Parse(flag.Args()[1:])
-		hosts, err := onboard.ReadSSHConfig(*sshConfig)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "clipport: %v\n", err)
-			os.Exit(1)
-		}
-		if *list {
-			for _, h := range hosts {
-				target := h.HostName
-				if h.User != "" && target != "" {
-					target = h.User + "@" + target
-				}
-				fmt.Printf("%-24s %s\n", h.Alias, target)
-			}
+		case <-a.doctorItem.ClickedCh:
+			a.runDoctor()
+		case <-a.reportItem.ClickedCh:
+			a.open(a.lastReport)
+		case <-a.configItem.ClickedCh:
+			a.open(a.paths.configPath)
+		case <-a.logsItem.ClickedCh:
+			a.openLogs()
+		case <-a.quitItem.ClickedCh:
+			a.setAction("Quitting")
+			systray.Quit()
 			return
 		}
-		result, err := onboard.RunTUI(hosts)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "clipport: %v\n", err)
-			os.Exit(1)
-		}
-		cfg, err := onboard.BuildConfig(result.Groups, hosts, "")
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "clipport: %v\n", err)
-			os.Exit(1)
-		}
-		if err := onboard.WriteConfig(*output, cfg); err != nil {
-			fmt.Fprintf(os.Stderr, "clipport: %v\n", err)
-			os.Exit(1)
-		}
-		fmt.Fprintf(os.Stderr, "clipport: wrote %s\n", *output)
-	default:
-		usage()
-		os.Exit(2)
 	}
 }
 
-func installedRemotePort() int {
-	if manifest, err := uninstall.LoadManifest(""); err == nil {
-		if port := portFromAddr(manifest.HTTPAddr); port != 0 {
-			return port
-		}
+func (a *trayApp) refresh() {
+	checker := menu.Checker{
+		Status: func() (daemon.Status, error) {
+			resp, err := daemon.Send(daemon.DefaultSocketPath(), daemon.Request{Command: "status"})
+			return resp.Status, err
+		},
 	}
-	return sshsetup.DefaultRemotePort
+	summary := checker.DaemonSummary()
+	a.statusItem.SetTitle(summary.Title)
+	systray.SetTooltip(summary.Title)
+	if summary.Detail == "" {
+		a.detailItem.Hide()
+	} else {
+		a.detailItem.SetTitle(summary.Detail)
+		a.detailItem.Show()
+	}
+	a.updateHosts(summary.ConfigHosts)
+	a.updateRecent(summary.RecentTransfers)
+	a.restartItem.Enable()
 }
 
-func portFromAddr(addr string) int {
-	if addr == "" {
-		return 0
-	}
-	_, portText, err := net.SplitHostPort(addr)
-	if err != nil {
-		return 0
-	}
-	port, err := strconv.Atoi(portText)
-	if err != nil || port <= 0 || port > 65535 {
-		return 0
-	}
-	return port
-}
-
-func usage() {
-	fmt.Fprintln(os.Stderr, "usage: clipport [--socket path] [--debug] paste")
-	fmt.Fprintln(os.Stderr, "       clipport [--socket path] register-session --host name")
-	fmt.Fprintln(os.Stderr, "       clipport [--socket path] session register --machine name [--session-key key] [--ssh-alias alias] [--ssh-host host] [--ssh-port port] [--ssh-user user]")
-	fmt.Fprintln(os.Stderr, "       clipport [--socket path] status")
-	fmt.Fprintln(os.Stderr, "       clipport [--socket path] doctor [--config path]")
-	fmt.Fprintln(os.Stderr, "       clipport test-paste [--config path] [--host name]")
-	fmt.Fprintln(os.Stderr, "       clipport uninstall [--manifest path] [--bin-dir path] [--ssh-config path] [--keep-iterm] [--remove-data] [--dry-run]")
-	fmt.Fprintln(os.Stderr, "       clipport ssh install-forward --host alias [--ssh-config path] [--port port]")
-	fmt.Fprintln(os.Stderr, "       clipport ssh install-session-hook --host alias --machine name [--ssh-config path] [--clipport-bin path]")
-	fmt.Fprintln(os.Stderr, "       clipport ssh install-session-hooks [--config path] [--ssh-config path] [--clipport-bin path]")
-	fmt.Fprintln(os.Stderr, "       clipport shims install --target ssh-alias [--token path] [--port port]")
-	fmt.Fprintln(os.Stderr, "       clipport shims setup --host machine [--config path] [--ssh-config path] [--token path] [--port port]")
-	fmt.Fprintln(os.Stderr, "       clipport shims uninstall --host machine [--config path] [--ssh-config path] [--remove-remote-token]")
-	fmt.Fprintln(os.Stderr, "       clipport onboard [--ssh-config path] [--output path] [--list]")
-}
-
-func shimsUsage() {
-	fmt.Fprintln(os.Stderr, "usage: clipport shims install --target ssh-alias [--token path] [--port port]")
-	fmt.Fprintln(os.Stderr, "       clipport shims setup --host machine [--config path] [--ssh-config path] [--token path] [--port port]")
-	fmt.Fprintln(os.Stderr, "       clipport shims uninstall --host machine [--config path] [--ssh-config path] [--remove-remote-token]")
-}
-
-func pasteErrorMessage(resp daemon.Response, err error, debug bool) string {
-	if !debug {
-		if resp.Error != "" {
-			return resp.Error
+func (a *trayApp) updateHosts(hosts []string) {
+	if len(hosts) == 0 {
+		a.hostsMenu.SetTitle("Hosts (none)")
+		a.hostsMenu.Disable()
+		for _, item := range a.hostItems {
+			item.Hide()
 		}
-		return daemon.PasteUnavailable
+		return
 	}
-	if resp.Error != "" && resp.Debug != "" {
-		return fmt.Sprintf("%s: %s", resp.Error, resp.Debug)
-	}
-	if resp.Error != "" {
-		return resp.Error
-	}
-	return fmt.Sprintf("%s: %v", daemon.PasteUnavailable, err)
-}
-
-func pasteOutput(resp daemon.Response) string {
-	if resp.Text != "" {
-		return resp.Text
-	}
-	return resp.Path
-}
-
-func registerSession(socketPath string, args []string, legacy bool) {
-	register := flag.NewFlagSet("session register", flag.ExitOnError)
-	host := register.String("host", "", "logical host name")
-	machine := register.String("machine", "", "logical machine name")
-	sshAlias := register.String("ssh-alias", "", "SSH alias used for the session")
-	sshHost := register.String("ssh-host", "", "resolved SSH host")
-	sshPort := register.String("ssh-port", "", "resolved SSH port")
-	sshUser := register.String("ssh-user", "", "resolved SSH user")
-	sessionKey := register.String("session-key", sessionKeyFromEnv(), "terminal session key")
-	_ = register.Parse(args)
-	if *machine == "" {
-		*machine = *host
-	}
-	if *machine == "" {
-		if legacy {
-			fmt.Fprintln(os.Stderr, "clipport: register-session requires --host")
-		} else {
-			fmt.Fprintln(os.Stderr, "clipport: session register requires --machine")
-		}
-		os.Exit(2)
-	}
-	_, err := daemon.Send(socketPath, daemon.Request{
-		Command:    "register_session",
-		Host:       *host,
-		Machine:    *machine,
-		SessionKey: *sessionKey,
-		SSHAlias:   *sshAlias,
-		SSHHost:    *sshHost,
-		SSHPort:    *sshPort,
-		SSHUser:    *sshUser,
-	})
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "clipport: %v\n", err)
-		os.Exit(1)
-	}
-}
-
-func handleSSHCommand(args []string) {
-	if len(args) == 0 {
-		sshUsage()
-		os.Exit(2)
-	}
-	switch args[0] {
-	case "install-forward":
-		sshCmd := flag.NewFlagSet("ssh install-forward", flag.ExitOnError)
-		host := sshCmd.String("host", "", "SSH host alias")
-		sshConfig := sshCmd.String("ssh-config", sshsetup.DefaultSSHConfigPath(), "ssh config path")
-		port := sshCmd.Int("port", sshsetup.DefaultRemotePort, "remote forward port")
-		_ = sshCmd.Parse(args[1:])
-		backup, err := sshsetup.InstallForward(*sshConfig, *host, *port)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "clipport: %v\n", err)
-			os.Exit(1)
-		}
-		fmt.Printf("backup %s\n", backup)
-		fmt.Printf("added RemoteForward for %s on port %d\n", *host, *port)
-	case "install-session-hook":
-		sshCmd := flag.NewFlagSet("ssh install-session-hook", flag.ExitOnError)
-		host := sshCmd.String("host", "", "SSH host alias")
-		machine := sshCmd.String("machine", "", "logical machine name")
-		sshConfig := sshCmd.String("ssh-config", sshsetup.DefaultSSHConfigPath(), "ssh config path")
-		clipportBin := sshCmd.String("clipport-bin", defaultClipportBin(), "absolute clipport binary path")
-		_ = sshCmd.Parse(args[1:])
-		backup, err := sshsetup.InstallSessionHook(*sshConfig, *host, *machine, *clipportBin)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "clipport: %v\n", err)
-			os.Exit(1)
-		}
-		if backup != "" {
-			fmt.Printf("backup %s\n", backup)
-			fmt.Printf("installed session hook for %s -> %s\n", *host, *machine)
-			return
-		}
-		fmt.Printf("session hook already present for %s -> %s\n", *host, *machine)
-	case "install-session-hooks":
-		sshCmd := flag.NewFlagSet("ssh install-session-hooks", flag.ExitOnError)
-		configPath := sshCmd.String("config", doctor.DefaultConfigPath(), "clipport config path")
-		sshConfig := sshCmd.String("ssh-config", sshsetup.DefaultSSHConfigPath(), "ssh config path")
-		clipportBin := sshCmd.String("clipport-bin", defaultClipportBin(), "absolute clipport binary path")
-		_ = sshCmd.Parse(args[1:])
-		results, err := installSessionHooks(*configPath, *sshConfig, *clipportBin)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "clipport: %v\n", err)
-			os.Exit(1)
-		}
-		for _, line := range results {
-			fmt.Println(line)
-		}
-	default:
-		sshUsage()
-		os.Exit(2)
-	}
-}
-
-func sshUsage() {
-	fmt.Fprintln(os.Stderr, "usage: clipport ssh install-forward --host alias [--ssh-config path] [--port port]")
-	fmt.Fprintln(os.Stderr, "       clipport ssh install-session-hook --host alias --machine name [--ssh-config path] [--clipport-bin path]")
-	fmt.Fprintln(os.Stderr, "       clipport ssh install-session-hooks [--config path] [--ssh-config path] [--clipport-bin path]")
-}
-
-func installSessionHooks(configPath, sshConfigPath, clipportBin string) ([]string, error) {
-	cfg, err := config.Load(configPath)
-	if err != nil {
-		return nil, err
-	}
-	type hook struct {
-		alias   string
-		machine string
-	}
-	var hooks []hook
-	seen := map[string]string{}
-	for _, host := range cfg.Hosts {
-		for _, route := range host.SortedRoutes() {
-			if machine, ok := seen[route.SSHTarget]; ok {
-				if machine != host.Name {
-					return nil, fmt.Errorf("ssh alias %q is used by multiple machines: %s, %s", route.SSHTarget, machine, host.Name)
-				}
-				continue
-			}
-			seen[route.SSHTarget] = host.Name
-			hooks = append(hooks, hook{alias: route.SSHTarget, machine: host.Name})
-		}
-	}
-	var lines []string
-	for _, hook := range hooks {
-		backup, err := sshsetup.InstallSessionHook(sshConfigPath, hook.alias, hook.machine, clipportBin)
-		if err != nil {
-			return nil, err
-		}
-		if backup != "" {
-			lines = append(lines, fmt.Sprintf("backup %s", backup))
-			lines = append(lines, fmt.Sprintf("installed session hook for %s -> %s", hook.alias, hook.machine))
+	a.hostsMenu.SetTitle(fmt.Sprintf("Hosts (%d)", len(hosts)))
+	a.hostsMenu.Enable()
+	for i, item := range a.hostItems {
+		if i >= len(hosts) {
+			item.Hide()
 			continue
 		}
-		lines = append(lines, fmt.Sprintf("session hook already present for %s -> %s", hook.alias, hook.machine))
-	}
-	return lines, nil
-}
-
-func sessionKeyFromEnv() string {
-	return os.Getenv("TERM_SESSION_ID")
-}
-
-func defaultClipportBin() string {
-	exe, err := os.Executable()
-	if err == nil {
-		if abs, err := filepath.Abs(exe); err == nil {
-			return abs
+		if i == len(a.hostItems)-1 && len(hosts) > len(a.hostItems) {
+			item.SetTitle(fmt.Sprintf("and %d more", len(hosts)-i))
+		} else {
+			item.SetTitle(hosts[i])
 		}
-		return exe
+		item.Show()
 	}
-	return "clipport"
+}
+
+func (a *trayApp) updateRecent(transfers []daemon.Transfer) {
+	for i, item := range a.recent {
+		if i >= len(transfers) {
+			item.Hide()
+			continue
+		}
+		item.SetTitle(menu.TransferLabel(transfers[i]))
+		item.Show()
+	}
+}
+
+func (a *trayApp) setAction(title string) {
+	a.statusItem.SetTitle("Clipport: " + title)
+}
+
+func (a *trayApp) setError(err error) {
+	if err == nil {
+		return
+	}
+	a.statusItem.SetTitle("Clipport: Error")
+	a.detailItem.SetTitle(err.Error())
+	a.detailItem.Show()
+}
+
+func (a *trayApp) runDoctor() {
+	checks := doctor.Run(a.paths.configPath, daemon.DefaultSocketPath())
+	report := formatDoctor(checks)
+	path, err := writeDoctorReport(report)
+	if err != nil {
+		a.setError(err)
+		return
+	}
+	a.lastReport = path
+	failures := 0
+	for _, check := range checks {
+		if !check.OK {
+			failures++
+		}
+	}
+	if failures == 0 {
+		a.doctorItem.SetTitle("Doctor: all checks passed")
+	} else {
+		a.doctorItem.SetTitle(fmt.Sprintf("Doctor: %d failed", failures))
+	}
+	a.reportItem.Enable()
+	a.reportItem.Show()
+	a.open(path)
+}
+
+func formatDoctor(checks []doctor.Check) string {
+	var b strings.Builder
+	for _, check := range checks {
+		mark := "ok"
+		if !check.OK {
+			mark = "fail"
+		}
+		if check.Detail == "" {
+			fmt.Fprintf(&b, "%-4s %s\n", mark, check.Name)
+		} else {
+			fmt.Fprintf(&b, "%-4s %-18s %s\n", mark, check.Name, check.Detail)
+		}
+	}
+	return b.String()
+}
+
+func writeDoctorReport(report string) (string, error) {
+	file, err := os.CreateTemp("", "clipport-doctor-*.txt")
+	if err != nil {
+		return "", err
+	}
+	defer file.Close()
+	if _, err := file.WriteString(report); err != nil {
+		return "", err
+	}
+	return file.Name(), nil
+}
+
+func (a *trayApp) openLogs() {
+	if fileExists(a.paths.errLog) {
+		a.open(a.paths.errLog)
+		return
+	}
+	if fileExists(a.paths.outLog) {
+		a.open(a.paths.outLog)
+		return
+	}
+	a.open(filepath.Dir(a.paths.errLog))
+}
+
+func (a *trayApp) open(path string) {
+	if path == "" {
+		return
+	}
+	if err := exec.Command("open", path).Run(); err != nil {
+		a.setError(err)
+	}
+}
+
+func fileExists(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
+}
+
+func init() {
+	if runtime.GOOS != "darwin" {
+		fmt.Fprintf(os.Stderr, "clipport is only supported on macOS, got %s\n", runtime.GOOS)
+		os.Exit(1)
+	}
 }

@@ -60,9 +60,14 @@ func readSSHConfig(path string, seen map[string]SSHHost, depth int) error {
 				if !filepath.IsAbs(pattern) {
 					pattern = filepath.Join(dir, pattern)
 				}
-				matches, _ := filepath.Glob(pattern)
+				matches, err := filepath.Glob(pattern)
+				if err != nil {
+					return err
+				}
 				for _, match := range matches {
-					_ = readSSHConfig(match, seen, depth+1)
+					if err := readSSHConfig(match, seen, depth+1); err != nil {
+						return err
+					}
 				}
 			}
 		case "host":

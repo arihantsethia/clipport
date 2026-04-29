@@ -10,15 +10,15 @@ permissions:
   contents: read
 
 jobs:
-  test:
-    name: gofmt, test, vet
-    runs-on: ubuntu-latest
+  verify:
+    name: verify
+    runs-on: macos-latest
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup Go
+      - name: Set up Go
         uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
@@ -26,7 +26,7 @@ jobs:
 
       - name: gofmt
         run: |
-          files="$(gofmt -l $(git ls-files '*.go'))"
+          files="$(git ls-files '*.go' | xargs gofmt -l)"
           if [ -n "$files" ]; then
             printf 'gofmt required:\n%s\n' "$files"
             exit 1
@@ -37,3 +37,8 @@ jobs:
 
       - name: go vet
         run: go vet ./...
+
+      - name: go build
+        run: |
+          go build ./cmd/clipctl ./cmd/clipportd
+          CGO_ENABLED=1 go build -o /tmp/clipport-menu-check ./cmd/clipport

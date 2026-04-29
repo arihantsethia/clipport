@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 
@@ -11,8 +12,27 @@ import (
 )
 
 type Config struct {
-	DefaultHost string `toml:"default_host"`
-	Hosts       []Host `toml:"hosts"`
+	DefaultHost string      `toml:"default_host"`
+	Hosts       []Host      `toml:"hosts"`
+	Local       LocalConfig `toml:"local"`
+}
+
+type LocalConfig struct {
+	BinDir              string      `toml:"bin_dir,omitempty"`
+	SSHConfigPath       string      `toml:"ssh_config_path,omitempty"`
+	AppLaunchdPlistPath string      `toml:"app_launchd_plist_path,omitempty"`
+	AppPath             string      `toml:"app_path,omitempty"`
+	HTTPAddr            string      `toml:"http_addr,omitempty"`
+	Iterm               ItermConfig `toml:"iterm"`
+}
+
+type ItermConfig struct {
+	Key        string `toml:"key,omitempty"`
+	Configured bool   `toml:"configured,omitempty"`
+}
+
+type localOnly struct {
+	Local LocalConfig `toml:"local"`
 }
 
 type Host struct {
@@ -28,32 +48,103 @@ type Route struct {
 }
 
 func Load(path string) (*Config, error) {
+	return load(path, true)
+}
+
+func LoadUnvalidated(path string) (*Config, error) {
+	return load(path, false)
+}
+
+func load(path string, validate bool) (*Config, error) {
 	var cfg Config
 	if _, err := toml.DecodeFile(path, &cfg); err != nil {
 		return nil, err
 	}
-	if err := cfg.Validate(); err != nil {
-		return nil, err
+	if validate {
+		if err := cfg.Validate(); err != nil {
+			return nil, err
+		}
 	}
 	return &cfg, nil
 }
 
-func LoadDefault() (*Config, error) {
-	path := os.Getenv("CLIPPORT_CONFIG")
+func LoadLocal(path string) (LocalConfig, error) {
 	if path == "" {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return nil, err
-		}
-		path = home + "/.config/clipport/config.toml"
+		path = DefaultPath()
 	}
+	var cfg localOnly
+	if _, err := toml.DecodeFile(path, &cfg); err != nil {
+		return LocalConfig{}, err
+	}
+	return cfg.Local, nil
+}
+
+func LoadLocalBestEffort(path string) (LocalConfig, error) {
+	local, err := LoadLocal(path)
+	if err == nil {
+		return local, nil
+	}
+	if os.IsNotExist(err) || isParseError(err) {
+		return LocalConfig{}, nil
+	}
+	return LocalConfig{}, err
+}
+
+func isParseError(err error) bool {
+	var parseErr toml.ParseError
+	if errors.As(err, &parseErr) {
+		return true
+	}
+	return false
+}
+
+func LoadUnvalidatedOrEmpty(path string) (*Config, error) {
+	if path == "" {
+		path = DefaultPath()
+	}
+	cfg, err := LoadUnvalidated(path)
+	if err == nil {
+		return cfg, nil
+	}
+	if os.IsNotExist(err) {
+		return &Config{}, nil
+	}
+	return nil, err
+}
+
+func LoadDefault() (*Config, error) {
+	path := DefaultPath()
 	return Load(path)
 }
 
-func (c *Config) Validate() error {
-	if len(c.Hosts) == 0 {
-		return errors.New("config must define at least one host")
+func DefaultPath() string {
+	path := os.Getenv("CLIPPORT_CONFIG")
+	if path != "" {
+		return path
 	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(home, ".config", "clipport", "config.toml")
+}
+
+func (c *Config) Save(path string) error {
+	if path == "" {
+		path = DefaultPath()
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
+	}
+	file, err := os.OpenFile(path, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+	return toml.NewEncoder(file).Encode(c)
+}
+
+func (c *Config) Validate() error {
 	seen := map[string]bool{}
 	for _, h := range c.Hosts {
 		if h.Name == "" {
@@ -81,6 +172,13 @@ func (c *Config) Validate() error {
 		}
 	}
 	return nil
+}
+
+func (c *Config) ValidateHostsRequired() error {
+	if len(c.Hosts) == 0 {
+		return errors.New("config must define at least one host")
+	}
+	return c.Validate()
 }
 
 func (c *Config) HostByName(name string) (Host, bool) {

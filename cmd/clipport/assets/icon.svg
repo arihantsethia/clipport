@@ -1,0 +1,14 @@
+<svg width="22" height="9" viewBox="0 0 22 9" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title desc">
+  <title id="title">clipport menu icon</title>
+  <desc id="desc">Two transfer endpoints connected by negative space.</desc>
+  <defs>
+    <mask id="bridge-cutout">
+      <rect width="22" height="9" fill="white"/>
+      <rect x="8.4" y="2.7" width="5.2" height="3.6" rx="1.8" fill="black"/>
+    </mask>
+  </defs>
+  <g mask="url(#bridge-cutout)">
+    <rect x="0" y="0" width="10.9" height="9" rx="2" fill="black"/>
+    <rect x="11.1" y="0" width="10.9" height="9" rx="2" fill="black"/>
+  </g>
+</svg>

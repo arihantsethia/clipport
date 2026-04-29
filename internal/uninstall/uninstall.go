@@ -8,23 +8,24 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/arihantsethia/clipport/internal/config"
 	"github.com/arihantsethia/clipport/internal/sshsetup"
 )
 
-const LaunchdLabel = "com.clipport.clipportd"
+const AppLaunchdLabel = "com.clipport.app"
 
 type Options struct {
-	BinDir         string
-	ConfigPath     string
-	SSHConfig      string
-	ManifestPath   string
-	RemoveData     bool
-	RemoveIterm    bool
-	RemoveItermSet bool
-	ItermKey       string
-	DryRun         bool
-	CurrentExe     string
-	LaunchdPlist   string
+	BinDir          string
+	ConfigPath      string
+	SSHConfig       string
+	RemoveData      bool
+	RemoveIterm     bool
+	RemoveItermSet  bool
+	ItermKey        string
+	DryRun          bool
+	CurrentExe      string
+	AppLaunchdPlist string
+	AppPath         string
 }
 
 type Result struct {
@@ -32,7 +33,7 @@ type Result struct {
 }
 
 func Run(opts Options) (Result, error) {
-	opts, manifestPath, manifestLoaded, err := loadInstallChoices(opts)
+	opts, configPath, configLoaded, err := loadInstallChoices(opts)
 	if err != nil {
 		return Result{}, err
 	}
@@ -48,20 +49,22 @@ func Run(opts Options) (Result, error) {
 	if opts.DryRun {
 		record("dry run: no files changed")
 	}
-	if manifestLoaded {
-		record("using install manifest %s", manifestPath)
-	} else if manifestPath != "" {
-		record("no install manifest found at %s; using defaults and explicit flags", manifestPath)
+	if configLoaded {
+		record("using config %s", configPath)
+	} else if configPath != "" {
+		record("no config found at %s; using defaults and explicit flags", configPath)
 	}
 
-	if err := bootout(opts.LaunchdPlist, opts.DryRun); err != nil {
-		return result, err
+	if opts.AppLaunchdPlist != "" {
+		if err := bootout(opts.AppLaunchdPlist, opts.DryRun); err != nil {
+			return result, err
+		}
+		record("stopped launchd service %s if it was running", AppLaunchdLabel)
+		if err := removePath(opts.AppLaunchdPlist, opts.DryRun); err != nil {
+			return result, err
+		}
+		record("%s app launchd agent %s", verb, opts.AppLaunchdPlist)
 	}
-	record("stopped launchd service %s if it was running", LaunchdLabel)
-	if err := removePath(opts.LaunchdPlist, opts.DryRun); err != nil {
-		return result, err
-	}
-	record("%s launchd agent %s", verb, opts.LaunchdPlist)
 
 	if opts.DryRun {
 		record("would remove clipport SSH config blocks from %s", opts.SSHConfig)
@@ -85,12 +88,18 @@ func Run(opts Options) (Result, error) {
 		}
 	}
 
-	for _, name := range []string{"clipport", "clipportd"} {
+	for _, name := range []string{"clipctl", "clipportd", "clipport"} {
 		path := filepath.Join(opts.BinDir, name)
 		if err := removePath(path, opts.DryRun); err != nil {
 			return result, err
 		}
 		record("%s %s", verb, path)
+	}
+	if opts.AppPath != "" {
+		if err := removePath(opts.AppPath, opts.DryRun); err != nil {
+			return result, err
+		}
+		record("%s app bundle %s", verb, opts.AppPath)
 	}
 
 	if opts.RemoveData {
@@ -107,28 +116,32 @@ func Run(opts Options) (Result, error) {
 }
 
 func loadInstallChoices(opts Options) (Options, string, bool, error) {
-	path := opts.ManifestPath
+	path := opts.ConfigPath
 	if path == "" {
-		path = DefaultManifestPath()
+		path = config.DefaultPath()
 	}
 	if path == "" {
 		return opts, "", false, nil
 	}
-	manifest, err := LoadManifest(path)
+	local, err := config.LoadLocalBestEffort(path)
 	if err != nil {
-		if os.IsNotExist(err) {
-			if !opts.RemoveItermSet {
-				opts.RemoveIterm = true
-			}
-			return opts, path, false, nil
-		}
 		return opts, path, false, err
 	}
-	return applyManifest(opts, manifest), path, true, nil
+	opts.ConfigPath = path
+	if local == (config.LocalConfig{}) {
+		if !opts.RemoveItermSet {
+			opts.RemoveIterm = true
+		}
+		return opts, path, false, nil
+	}
+	return applyLocalSettings(opts, local), path, true, nil
 }
 
 func withDefaults(opts Options) Options {
 	home, _ := os.UserHomeDir()
+	if opts.ConfigPath == "" {
+		opts.ConfigPath = config.DefaultPath()
+	}
 	if opts.CurrentExe == "" {
 		opts.CurrentExe, _ = os.Executable()
 	}
@@ -144,8 +157,11 @@ func withDefaults(opts Options) Options {
 	if opts.ItermKey == "" {
 		opts.ItermKey = "0x76-0x120000"
 	}
-	if opts.LaunchdPlist == "" && home != "" {
-		opts.LaunchdPlist = filepath.Join(home, "Library", "LaunchAgents", LaunchdLabel+".plist")
+	if opts.AppLaunchdPlist == "" && home != "" {
+		opts.AppLaunchdPlist = filepath.Join(home, "Library", "LaunchAgents", AppLaunchdLabel+".plist")
+	}
+	if opts.AppPath == "" && home != "" {
+		opts.AppPath = filepath.Join(home, "Applications", "Clipport.app")
 	}
 	return opts
 }
@@ -206,7 +222,7 @@ func removeItermHotkey(key string, dryRun bool) (bool, error) {
 	if err != nil {
 		return false, nil
 	}
-	if !strings.Contains(string(out), "clipport paste") {
+	if !strings.Contains(string(out), "clipctl paste") {
 		return false, nil
 	}
 	if dryRun {

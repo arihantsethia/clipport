@@ -22,6 +22,9 @@ func LoadOrCreate(path string) (string, error) {
 	}
 	value, err := Load(path)
 	if err == nil {
+		if err := os.Chmod(path, 0o600); err != nil {
+			return "", err
+		}
 		return value, nil
 	}
 	if !os.IsNotExist(err) {

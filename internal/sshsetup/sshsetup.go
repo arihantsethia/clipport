@@ -50,7 +50,7 @@ func InstallForward(configPath, host string, remotePort int) (string, error) {
 	return backup, nil
 }
 
-func InstallSessionHook(configPath, host, machine, clipportBin string) (string, error) {
+func InstallSessionHook(configPath, host, machine, clipctlBin string) (string, error) {
 	if err := ValidateHostAlias(host); err != nil {
 		return "", err
 	}
@@ -58,9 +58,9 @@ func InstallSessionHook(configPath, host, machine, clipportBin string) (string, 
 	if machine == "" {
 		return "", fmt.Errorf("machine is required")
 	}
-	clipportBin = strings.TrimSpace(clipportBin)
-	if clipportBin == "" {
-		return "", fmt.Errorf("clipport binary path is required")
+	clipctlBin = strings.TrimSpace(clipctlBin)
+	if clipctlBin == "" {
+		return "", fmt.Errorf("clipctl binary path is required")
 	}
 	data, err := os.ReadFile(configPath)
 	if err != nil {
@@ -74,7 +74,7 @@ func InstallSessionHook(configPath, host, machine, clipportBin string) (string, 
 		"\n# clipport session begin %s\nHost %s\n    PermitLocalCommand yes\n    LocalCommand %s session register --machine %s --session-key \"${TERM_SESSION_ID:-}\" --ssh-alias %s --ssh-host %s --ssh-port %s --ssh-user %s\n# clipport session end %s\n",
 		host,
 		host,
-		shellQuote(clipportBin),
+		shellQuote(clipctlBin),
 		shellQuote(machine),
 		shellQuote("%n"),
 		shellQuote("%h"),
@@ -188,7 +188,7 @@ func isClipportEnd(line string) bool {
 }
 
 func writeConfigWithBackup(configPath string, current, updated []byte) (string, error) {
-	backup := fmt.Sprintf("%s.clipport-%s.bak", configPath, time.Now().Format("20060102-150405"))
+	backup := fmt.Sprintf("%s.clipport-%s.bak", configPath, time.Now().Format("20060102-150405.000000000"))
 	if err := os.WriteFile(backup, current, 0o600); err != nil {
 		return "", err
 	}

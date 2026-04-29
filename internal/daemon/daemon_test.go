@@ -149,6 +149,37 @@ func TestExplicitLocalSessionInvokesNativePaste(t *testing.T) {
 	}
 }
 
+func TestEmptyDetectedHostDoesNotResolveDefaultHost(t *testing.T) {
+	paster := &fakePaster{}
+	s := &Server{
+		Config: &config.Config{
+			DefaultHost: "devbox",
+			Hosts: []config.Host{{
+				Name:   "devbox",
+				Routes: []config.Route{{Name: "public", SSHTarget: "devbox-public"}},
+			}},
+		},
+		Sessions:    fakeSessions{terminal.Session{SessionKey: "s1", Kind: terminal.SessionLocal, RawTitle: "zsh"}},
+		Clipboard:   fakeClipboard{item: clipboard.Item{Kind: clipboard.KindPNG, Data: []byte("png")}},
+		Paster:      paster,
+		Routes:      remote.NewManager(func(target string) bool { return true }),
+		registered:  map[string]sessionBinding{},
+		recent:      nil,
+		recentBinds: nil,
+	}
+
+	resp, err := s.Paste(terminal.Session{SessionKey: "s1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !paster.called {
+		t.Fatal("native paste was not called")
+	}
+	if resp.Path != "" || resp.Text != "" {
+		t.Fatalf("resp = %+v, want empty for local paste", resp)
+	}
+}
+
 func TestUnmatchedRemoteLookingSessionDoesNotInvokeNativePaste(t *testing.T) {
 	paster := &fakePaster{}
 	s := &Server{
@@ -164,7 +195,7 @@ func TestUnmatchedRemoteLookingSessionDoesNotInvokeNativePaste(t *testing.T) {
 	if paster.called {
 		t.Fatal("native paste was called for unresolved remote-looking session")
 	}
-	if !strings.Contains(err.Error(), "clipport session register --machine <name>") {
+	if !strings.Contains(err.Error(), "clipctl session register --machine <name>") {
 		t.Fatalf("error = %q", err.Error())
 	}
 }
@@ -294,7 +325,7 @@ func TestPasteUnmatchedSessionReportsSessionGuidance(t *testing.T) {
 	for _, want := range []string{
 		`detected host "mystery-box"`,
 		`configured machines: devbox, prod`,
-		`clipport session register --machine <name>`,
+		`clipctl session register --machine <name>`,
 	} {
 		if !strings.Contains(err.Error(), want) {
 			t.Fatalf("error %q missing %q", err.Error(), want)

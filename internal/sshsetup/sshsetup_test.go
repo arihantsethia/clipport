@@ -36,7 +36,7 @@ func TestInstallSessionHookWritesExpectedBlock(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	backup, err := InstallSessionHook(configPath, "devbox-public", "devbox", "/usr/local/bin/clipport")
+	backup, err := InstallSessionHook(configPath, "devbox-public", "devbox", "/usr/local/bin/clipctl")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -49,7 +49,7 @@ func TestInstallSessionHookWritesExpectedBlock(t *testing.T) {
 		t.Fatal(err)
 	}
 	text := string(data)
-	if !strings.Contains(text, "# clipport session begin devbox-public\nHost devbox-public\n    PermitLocalCommand yes\n    LocalCommand '/usr/local/bin/clipport' session register --machine 'devbox' --session-key \"${TERM_SESSION_ID:-}\" --ssh-alias '%n' --ssh-host '%h' --ssh-port '%p' --ssh-user '%r'\n# clipport session end devbox-public\n") {
+	if !strings.Contains(text, "# clipport session begin devbox-public\nHost devbox-public\n    PermitLocalCommand yes\n    LocalCommand '/usr/local/bin/clipctl' session register --machine 'devbox' --session-key \"${TERM_SESSION_ID:-}\" --ssh-alias '%n' --ssh-host '%h' --ssh-port '%p' --ssh-user '%r'\n# clipport session end devbox-public\n") {
 		t.Fatalf("config missing session block:\n%s", text)
 	}
 }
@@ -105,7 +105,7 @@ func TestInstallSessionHookRejectsInvalidAlias(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, err := InstallSessionHook(configPath, "devbox\nProxyCommand evil", "devbox", "/usr/local/bin/clipport")
+	_, err := InstallSessionHook(configPath, "devbox\nProxyCommand evil", "devbox", "/usr/local/bin/clipctl")
 	if err == nil {
 		t.Fatal("expected invalid alias error")
 	}
@@ -122,7 +122,7 @@ func TestInstallSessionHookDoesNotTreatPrefixAliasAsInstalled(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	backup, err := InstallSessionHook(configPath, "dev", "dev", "/usr/local/bin/clipport")
+	backup, err := InstallSessionHook(configPath, "dev", "dev", "/usr/local/bin/clipctl")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -146,7 +146,7 @@ func TestInstallSessionHookIsIdempotent(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := InstallSessionHook(configPath, "devbox-public", "devbox", "/usr/local/bin/clipport"); err != nil {
+	if _, err := InstallSessionHook(configPath, "devbox-public", "devbox", "/usr/local/bin/clipctl"); err != nil {
 		t.Fatal(err)
 	}
 	first, err := os.ReadFile(configPath)
@@ -154,7 +154,7 @@ func TestInstallSessionHookIsIdempotent(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	backup, err := InstallSessionHook(configPath, "devbox-public", "devbox", "/usr/local/bin/clipport")
+	backup, err := InstallSessionHook(configPath, "devbox-public", "devbox", "/usr/local/bin/clipctl")
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -1,7 +1,7 @@
 # Clipport Architecture
 
-Contributor map for the Clipport codebase. Keep this file current when runtime
-behavior, file layout, security boundaries, or install behavior changes.
+This is the maintainer map for Clipport. Update it when runtime behavior, file
+layout, security boundaries, or install behavior changes.
 
 Last updated: 2026-04-29
 
@@ -10,13 +10,15 @@ Last updated: 2026-04-29
 ```text
 clipport/
 ├── cmd/
-│   ├── clipport/          # CLI used by iTerm and support commands
+│   ├── clipctl/            # CLI used by iTerm and support commands
+│   ├── clipport/          # primary macOS app and daemon manager
 │   └── clipportd/         # local daemon entrypoint
 ├── internal/
 │   ├── clipboard/          # osascript, pbpaste, pngpaste integration
 │   ├── config/             # TOML config and host resolution
 │   ├── daemon/             # paste flow, socket protocol, shim HTTP API
 │   ├── doctor/             # health checks
+│   ├── menu/               # daemon process and status helpers for the app
 │   ├── onboard/            # config TUI built from ~/.ssh/config
 │   ├── registry/           # route and transfer cache
 │   ├── remote/             # route probing, SSH upload, remote paths
@@ -35,15 +37,17 @@ clipport/
 ```
 
 Runtime behavior belongs in `internal/daemon`. Setup, diagnostics, shims, and
-uninstall code should stay outside the main paste path.
+uninstall stay outside the main paste path.
 
 ## 2. System Diagram
 
 ```mermaid
 flowchart LR
   user["iTerm2"]
-  cli["clipport paste"]
+  cli["clipctl paste"]
+  menu["clipport"]
   daemon["clipportd"]
+  launchd["launchd"]
   session["session lookup"]
   clipboard["macOS clipboard"]
   local["native Cmd-V"]
@@ -54,6 +58,8 @@ flowchart LR
 
   user --> cli
   cli --> daemon
+  menu --> daemon
+  launchd --> menu
   daemon --> session
   daemon --> clipboard
   daemon --> local
@@ -63,19 +69,21 @@ flowchart LR
   http --> daemon
 ```
 
-Two paths exist:
+There are two primary paths:
 
-- `clipport paste` over a local Unix socket for normal iTerm paste.
+- `clipctl paste` over a local Unix socket for iTerm paste.
+- `clipport` supervises `clipportd` and uses the same Unix socket for
+  menu status.
 - Remote `wl-paste`/`xclip` shims over SSH `RemoteForward` plus loopback HTTP.
 
 ## 3. Core Components
 
 ### 3.1 CLI
 
-Path: `cmd/clipport`
+Path: `cmd/clipctl`
 
 The CLI is the iTerm-facing process. It sends JSON requests to the daemon and
-prints the daemon response.
+prints the daemon response without extra framing.
 
 Commands handled here:
 
@@ -117,13 +125,31 @@ Main entry points:
 - `Server.Listen`
 - `Server.ListenHTTP`
 
-### 3.3 Terminal Sessions
+### 3.3 Menu Bar App
+
+Paths: `cmd/clipport`, `internal/menu`
+
+Clipport is a macOS companion process, not part of the paste path. It starts
+`clipportd` as a child process with `--parent-pid`, reads daemon status over
+the same Unix socket protocol as the CLI, and stops the daemon before exiting.
+The daemon exits if the supervising menu process disappears.
+
+Menu functions:
+
+- show running, stopped, or error state
+- restart `clipportd`
+- run doctor checks and open a report file
+- show configured hosts in a submenu and recent transfers from daemon status
+- open config and daemon log files
+- stop `clipportd` when Clipport quits
+
+### 3.4 Terminal Sessions
 
 Path: `internal/terminal`
 
 The daemon receives `TERM_SESSION_ID` from the CLI. If the session has been
-registered, that binding wins. Otherwise the daemon uses active iTerm metadata
-and configured host matching.
+registered, that binding wins. Otherwise the daemon falls back to active iTerm
+metadata and configured host matching.
 
 Resolution order:
 
@@ -133,7 +159,7 @@ Resolution order:
 4. native paste for known local sessions
 5. paste-unavailable error for unresolved remote sessions
 
-### 3.4 Clipboard
+### 3.5 Clipboard
 
 Path: `internal/clipboard`
 
@@ -145,7 +171,7 @@ Clipboard detection uses:
 
 Images are preferred over text when both are available.
 
-### 3.5 Config And Routes
+### 3.6 Config And Routes
 
 Paths: `internal/config`, `internal/remote`
 
@@ -158,14 +184,14 @@ Routes are sorted by ascending `priority`. `remote.Manager` caches the best
 known route for each machine. Probing uses a quick TCP check when possible and
 falls back to `ssh ... true`.
 
-Upload transport is OpenSSH. Do not add a separate SSH transport unless there is
-a clear reason.
+Upload transport is OpenSSH. Do not add another SSH transport unless there is a
+clear operational need.
 
 ## 4. Data Flows
 
 ### 4.1 Local Paste
 
-1. iTerm runs `clipport paste`.
+1. iTerm runs `clipctl paste`.
 2. CLI sends `Request{Command: "paste", SessionKey: TERM_SESSION_ID}`.
 3. Daemon resolves the session as local.
 4. Daemon invokes native Cmd-V.
@@ -173,7 +199,7 @@ a clear reason.
 
 ### 4.2 Remote Text Paste
 
-1. iTerm runs `clipport paste`.
+1. iTerm runs `clipctl paste`.
 2. Daemon resolves the session to a machine.
 3. Clipboard provider selects text and runs `pbpaste`.
 4. Daemon returns `Response{Text: ...}`.
@@ -181,7 +207,7 @@ a clear reason.
 
 ### 4.3 Remote Image Paste
 
-1. iTerm runs `clipport paste`.
+1. iTerm runs `clipctl paste`.
 2. Daemon resolves the session to a machine.
 3. Clipboard provider selects image data and runs `pngpaste -`.
 4. Route manager chooses a route.
@@ -207,7 +233,7 @@ filesystem.
 5. Daemon returns clipboard bytes as `text/plain; charset=utf-8` or
    `image/png`.
 
-This path is separate from `clipport paste`.
+This path is separate from `clipctl paste`.
 
 ## 5. State And Storage
 
@@ -217,14 +243,11 @@ User config:
 ~/.config/clipport/config.toml
 ```
 
-Install manifest:
+The same file also records local install choices needed by uninstall. It must
+not contain secrets.
 
-```text
-~/.config/clipport/install.toml
-```
-
-The manifest records local install artifacts for uninstall. It must not contain
-secrets.
+Routing stays at the top level. Machine-local install state lives under
+`[local]`, with iTerm-specific state under `[local.iterm]`.
 
 Shim token, local and remote:
 
@@ -241,6 +264,8 @@ Runtime paths:
 /tmp/clipport/<local-user>/clipboard-*.png
 /tmp/clipportd.out.log
 /tmp/clipportd.err.log
+/tmp/clipport.out.log
+/tmp/clipport.err.log
 ```
 
 `internal/registry` stores route and transfer hints used by `status` and
@@ -252,22 +277,21 @@ diagnostics.
 - macOS clipboard: `osascript`, `pbpaste`
 - Homebrew: installs `pngpaste` and Go when needed
 - OpenSSH: uploads, SSH config, `RemoteForward`, aliases
-- launchd: daemon lifecycle
+- launchd: app lifecycle
+- systray: menu bar integration for `clipport`
 
-OpenSSH owns SSH behavior. Clipport should not reimplement `Port`,
+OpenSSH owns SSH behavior. Clipport must not reimplement `Port`,
 `ProxyJump`, `ProxyCommand`, identity handling, or connection reuse.
 
 ## 7. Install And Runtime
 
 `install.sh`:
 
-- builds `clipport` and `clipportd`
+- builds `clipctl`, `clipportd`, and `clipport`
 - installs them to `~/.local/bin` by default
-- runs onboarding when config is missing
-- starts `clipportd` through launchd
-- can add iTerm key binding
-- can add SSH session hooks
-- writes `~/.config/clipport/install.toml`
+- creates `~/Applications/Clipport.app`
+- writes or updates local install settings in `~/.config/clipport/config.toml`
+- does not prompt, onboard, or start anything
 
 Daemon runtime:
 
@@ -275,7 +299,8 @@ Daemon runtime:
 - HTTP API, when enabled, binds only to loopback
 - uploaded files stay under `/tmp/clipport/...`
 
-CI runs `gofmt`, `go test ./...`, and `go vet ./...`.
+CI runs `gofmt`, `go test ./...`, `go vet ./...`, and builds all shipped
+commands.
 
 ## 8. Security Boundaries
 
@@ -285,9 +310,9 @@ CI runs `gofmt`, `go test ./...`, and `go vet ./...`.
 - Shim executables read tokens from disk; they do not embed token literals.
 - Upload paths stay under `/tmp/clipport/...`.
 - SSH config edits stay inside marked Clipport blocks.
-- Host aliases and generated SSH config content must be shell-safe.
+- Host aliases and managed SSH config content must be shell-safe.
 
-The normal paste path exposes no network listener.
+The iTerm paste path exposes no network listener.
 
 ## 9. Development And Testing
 
@@ -299,9 +324,9 @@ go test ./...
 go vet ./...
 ```
 
-Useful test targets:
+Focused test targets:
 
-- CLI stdout: `cmd/clipport`
+- CLI stdout: `cmd/clipctl`
 - paste orchestration: `internal/daemon`
 - clipboard selection: `internal/clipboard`
 - remote upload paths: `internal/remote`
@@ -325,7 +350,7 @@ even if upload succeeds.
 - Use OpenSSH as transport.
 - Do not add config knobs without a concrete use case.
 
-## 11. Possible Future Work
+## 11. Backlog
 
 - image formats beyond PNG output
 - clearer session matching diagnostics

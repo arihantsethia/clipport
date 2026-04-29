@@ -90,3 +90,22 @@ ssh_target = "devbox-public"
 		t.Fatalf("default resolution = (%q, %v), want devbox true", host.Name, ok)
 	}
 }
+
+func TestLoadAllowsLocalSettingsWithoutHosts(t *testing.T) {
+	path := writeConfig(t, `
+[local]
+bin_dir = "/tmp/bin"
+http_addr = "127.0.0.1:18765"
+
+[local.iterm]
+key = "0x76-0x120000"
+`)
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Local.BinDir != "/tmp/bin" || cfg.Local.HTTPAddr != "127.0.0.1:18765" || cfg.Local.Iterm.Key != "0x76-0x120000" {
+		t.Fatalf("cfg = %+v", cfg)
+	}
+}

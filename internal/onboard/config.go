@@ -2,11 +2,9 @@ package onboard
 
 import (
 	"fmt"
-	"os"
-	"path/filepath"
+	"sort"
 	"strings"
 
-	"github.com/BurntSushi/toml"
 	"github.com/arihantsethia/clipport/internal/config"
 )
 
@@ -60,6 +58,7 @@ func BuildConfig(groups []HostGroup, sshHosts []SSHHost, defaultHost string) (*c
 		for alias := range aliases {
 			host.MatchHosts = append(host.MatchHosts, alias)
 		}
+		sort.Strings(host.MatchHosts)
 		cfg.Hosts = append(cfg.Hosts, host)
 	}
 	if cfg.DefaultHost == "" && len(cfg.Hosts) > 0 {
@@ -72,13 +71,9 @@ func BuildConfig(groups []HostGroup, sshHosts []SSHHost, defaultHost string) (*c
 }
 
 func WriteConfig(path string, cfg *config.Config) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return err
+	existing, err := config.LoadLocalBestEffort(path)
+	if err == nil {
+		cfg.Local = existing
 	}
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-	return toml.NewEncoder(f).Encode(cfg)
+	return cfg.Save(path)
 }

@@ -6,6 +6,7 @@ import (
 	"log"
 	"net"
 	"os"
+	"time"
 
 	"github.com/arihantsethia/clipport/internal/config"
 	"github.com/arihantsethia/clipport/internal/daemon"
@@ -17,6 +18,7 @@ func main() {
 	socketPath := flag.String("socket", daemon.DefaultSocketPath(), "unix socket path")
 	httpAddr := flag.String("http", "", "optional loopback HTTP address for SSH RemoteForward clients")
 	tokenPath := flag.String("token", token.DefaultPath(), "bearer token path for HTTP clients")
+	parentPID := flag.Int("parent-pid", 0, "optional supervising parent process id")
 	flag.Parse()
 
 	var cfg *config.Config
@@ -29,6 +31,13 @@ func main() {
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "clipportd: %v\n", err)
 		os.Exit(1)
+	}
+	if err := cfg.ValidateHostsRequired(); err != nil {
+		fmt.Fprintf(os.Stderr, "clipportd: %v\n", err)
+		os.Exit(1)
+	}
+	if *parentPID > 0 {
+		go exitWhenParentDies(*parentPID)
 	}
 	server := daemon.NewServer(cfg)
 	if *httpAddr != "" {
@@ -67,4 +76,14 @@ func requireLoopback(addr string) error {
 		return fmt.Errorf("--http must bind to loopback, got %q", addr)
 	}
 	return nil
+}
+
+func exitWhenParentDies(parentPID int) {
+	ticker := time.NewTicker(time.Second)
+	defer ticker.Stop()
+	for range ticker.C {
+		if os.Getppid() != parentPID {
+			os.Exit(0)
+		}
+	}
 }

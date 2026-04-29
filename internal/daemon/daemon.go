@@ -28,7 +28,7 @@ type PasteExecutor interface {
 	Paste() error
 }
 
-const PasteUnavailable = "clipport: paste unavailable"
+const PasteUnavailable = "clipctl: paste unavailable"
 
 type Server struct {
 	Config    *config.Config
@@ -226,6 +226,9 @@ func (s *Server) resolveSessionHost(session terminal.Session) (config.Host, bool
 			return host, true
 		}
 	}
+	if strings.TrimSpace(session.DetectedHost) == "" {
+		return config.Host{}, false
+	}
 	return s.Config.ResolveHost(session.DetectedHost)
 }
 
@@ -285,8 +288,8 @@ func (s *Server) sessionMatchError(session terminal.Session) error {
 	if len(machines) > 0 {
 		details = append(details, fmt.Sprintf("configured machines: %s", strings.Join(machines, ", ")))
 	}
-	details = append(details, `run: clipport session register --machine <name>`)
-	return fmt.Errorf("could not match active iTerm session (%s)", strings.Join(details, "; "))
+	details = append(details, `run: clipctl session register --machine <name>`)
+	return fmt.Errorf("failed to match active iTerm session (%s)", strings.Join(details, "; "))
 }
 
 func (s *Server) configHostNames() []string {

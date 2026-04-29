@@ -5,15 +5,16 @@ repo_url="${CLIPPORT_REPO:-https://github.com/arihantsethia/clipport.git}"
 repo_ref="${CLIPPORT_REF:-main}"
 bin_dir="${CLIPPORT_BIN:-$HOME/.local/bin}"
 config_path="${CLIPPORT_CONFIG:-$HOME/.config/clipport/config.toml}"
-manifest_path="$HOME/.config/clipport/install.toml"
 http_addr="${CLIPPORT_HTTP:-}"
-label="com.clipport.clipportd"
-plist_path="$HOME/Library/LaunchAgents/$label.plist"
-iterm_key="${CLIPPORT_ITERM_KEY:-0x76-0x120000}"
-iterm_configured=0
-session_hooks_configured=0
+app_label="com.clipport.app"
+app_plist_path="$HOME/Library/LaunchAgents/$app_label.plist"
+app_path="$HOME/Applications/Clipport.app"
+iterm_key="${CLIPPORT_ITERM_KEY:-}"
 
 tmp_dir=""
+config_exists=0
+app_was_running=0
+install_result="installed"
 
 cleanup() {
   if [ -n "$tmp_dir" ]; then
@@ -31,16 +32,22 @@ die() {
   exit 1
 }
 
-toml_escape() {
-  printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'
-}
-
 have() {
   command -v "$1" >/dev/null 2>&1
 }
 
 port_in_use() {
   lsof -nP -iTCP:"$1" -sTCP:LISTEN >/dev/null 2>&1
+}
+
+app_launch_agent_running() {
+  launchctl print "gui/$(id -u)/$app_label" >/dev/null 2>&1
+}
+
+detect_install_action() {
+  if [ -f "$config_path" ] || [ -x "$bin_dir/clipctl" ] || [ -d "$app_path" ] || [ -f "$app_plist_path" ]; then
+    install_result="upgraded"
+  fi
 }
 
 choose_http_addr() {
@@ -59,47 +66,22 @@ choose_http_addr() {
 }
 
 validate_http_addr() {
+  [ -n "$http_addr" ] || return 0
   case "$http_addr" in
-    127.0.0.1:*|localhost:*) ;;
+    127.0.0.1:*|localhost:*|\[::1\]:*) ;;
     *) die "CLIPPORT_HTTP must bind to loopback, got $http_addr" ;;
   esac
 }
 
-can_prompt() {
-  [ -r /dev/tty ] && [ -w /dev/tty ] && { : </dev/tty >/dev/tty; } 2>/dev/null
-}
-
-confirm() {
-  prompt="$1"
-  default="${2:-y}"
-  if ! can_prompt; then
-    [ "$default" = "y" ]
-    return
-  fi
-  if [ "$default" = "y" ]; then
-    suffix="[Y/n]"
-  else
-    suffix="[y/N]"
-  fi
-  printf '%s %s ' "$prompt" "$suffix" >/dev/tty
-  IFS= read -r answer </dev/tty || answer=""
-  case "$answer" in
-    y|Y|yes|YES) return 0 ;;
-    n|N|no|NO) return 1 ;;
-    "") [ "$default" = "y" ] ;;
-    *) return 1 ;;
-  esac
-}
-
 source_dir() {
-  if [ -f "./go.mod" ] && [ -d "./cmd/clipport" ]; then
+  if [ -f "./go.mod" ] && [ -d "./cmd/clipctl" ]; then
     pwd
     return
   fi
   case "$0" in
     */*)
       script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" 2>/dev/null && pwd || true)
-      if [ -n "$script_dir" ] && [ -f "$script_dir/go.mod" ] && [ -d "$script_dir/cmd/clipport" ]; then
+      if [ -n "$script_dir" ] && [ -f "$script_dir/go.mod" ] && [ -d "$script_dir/cmd/clipctl" ]; then
         say "$script_dir"
         return
       fi
@@ -111,97 +93,59 @@ source_dir() {
   say "$tmp_dir/clipport"
 }
 
-write_launch_agent() {
+write_menu_app_bundle() {
+  mkdir -p "$app_path/Contents/MacOS" "$app_path/Contents/Resources"
+  install -m 0755 "$build_dir/clipport" "$app_path/Contents/MacOS/clipport"
+  cat >"$app_path/Contents/Info.plist" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleExecutable</key>
+  <string>clipport</string>
+  <key>CFBundleIdentifier</key>
+  <string>com.clipport.app</string>
+  <key>CFBundleName</key>
+  <string>Clipport</string>
+  <key>CFBundleDisplayName</key>
+  <string>Clipport</string>
+  <key>CFBundlePackageType</key>
+  <string>APPL</string>
+  <key>CFBundleVersion</key>
+  <string>1</string>
+  <key>CFBundleShortVersionString</key>
+  <string>1.0</string>
+  <key>LSUIElement</key>
+  <string>1</string>
+  <key>NSHighResolutionCapable</key>
+  <string>True</string>
+</dict>
+</plist>
+PLIST
+}
+
+write_app_launch_agent() {
   mkdir -p "$HOME/Library/LaunchAgents"
-  cat >"$plist_path" <<PLIST
+  cat >"$app_plist_path" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
   <key>Label</key>
-  <string>$label</string>
+  <string>$app_label</string>
   <key>ProgramArguments</key>
   <array>
-    <string>$bin_dir/clipportd</string>
-    <string>--config</string>
-    <string>$config_path</string>
-    <string>--http</string>
-    <string>$http_addr</string>
+    <string>$app_path/Contents/MacOS/clipport</string>
   </array>
   <key>RunAtLoad</key>
   <true/>
-  <key>KeepAlive</key>
-  <true/>
   <key>StandardOutPath</key>
-  <string>/tmp/clipportd.out.log</string>
+  <string>/tmp/clipport.out.log</string>
   <key>StandardErrorPath</key>
-  <string>/tmp/clipportd.err.log</string>
+  <string>/tmp/clipport.err.log</string>
 </dict>
 </plist>
 PLIST
-
-  launchctl bootout "gui/$(id -u)" "$plist_path" >/dev/null 2>&1 || true
-  launchctl bootstrap "gui/$(id -u)" "$plist_path"
-  launchctl kickstart -k "gui/$(id -u)/$label"
-}
-
-configure_iterm() {
-  case "${CLIPPORT_CONFIGURE_ITERM:-ask}" in
-    0|false|no) return ;;
-    1|true|yes) ;;
-    ask)
-      confirm "Configure iTerm hotkey for clipport paste?" y || return
-      ;;
-    *) die "CLIPPORT_CONFIGURE_ITERM must be 0, 1, yes, no, ask, or unset" ;;
-  esac
-
-  prefs="$HOME/Library/Preferences/com.googlecode.iterm2.plist"
-  command_text="$bin_dir/clipport paste"
-  mkdir -p "$(dirname "$prefs")"
-  if [ ! -f "$prefs" ]; then
-    printf '%s\n' '<?xml version="1.0" encoding="UTF-8"?>' \
-      '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">' \
-      '<plist version="1.0"><dict/></plist>' >"$prefs"
-  fi
-
-  /usr/libexec/PlistBuddy -c "Add :GlobalKeyMap dict" "$prefs" >/dev/null 2>&1 || true
-  /usr/libexec/PlistBuddy -c "Delete :GlobalKeyMap:$iterm_key" "$prefs" >/dev/null 2>&1 || true
-  /usr/libexec/PlistBuddy -c "Add :GlobalKeyMap:$iterm_key dict" "$prefs"
-  /usr/libexec/PlistBuddy -c "Add :GlobalKeyMap:$iterm_key:Action integer 35" "$prefs"
-  /usr/libexec/PlistBuddy -c "Add :GlobalKeyMap:$iterm_key:Text string $command_text" "$prefs"
-
-  iterm_configured=1
-  say "configured iTerm hotkey: Cmd-Shift-V -> clipport paste"
-  say "restart iTerm if it was open during install"
-}
-
-configure_session_hooks() {
-  case "${CLIPPORT_CONFIGURE_SESSION_HOOKS:-ask}" in
-    0|false|no) return ;;
-    1|true|yes) ;;
-    ask)
-      confirm "Enable automatic SSH session matching?" y || return
-      ;;
-    *) die "CLIPPORT_CONFIGURE_SESSION_HOOKS must be 0, 1, yes, no, ask, or unset" ;;
-  esac
-
-  "$bin_dir/clipport" ssh install-session-hooks --config "$config_path" --clipport-bin "$bin_dir/clipport"
-  session_hooks_configured=1
-}
-
-write_manifest() {
-  mkdir -p "$(dirname "$manifest_path")"
-  cat >"$manifest_path" <<MANIFEST
-bin_dir = "$(toml_escape "$bin_dir")"
-config_path = "$(toml_escape "$config_path")"
-ssh_config_path = "$(toml_escape "$HOME/.ssh/config")"
-launchd_plist_path = "$(toml_escape "$plist_path")"
-http_addr = "$(toml_escape "$http_addr")"
-iterm_key = "$(toml_escape "$iterm_key")"
-iterm_configured = $(if [ "$iterm_configured" = 1 ]; then printf true; else printf false; fi)
-session_hooks_configured = $(if [ "$session_hooks_configured" = 1 ]; then printf true; else printf false; fi)
-MANIFEST
-  chmod 600 "$manifest_path"
 }
 
 [ "$(uname -s)" = "Darwin" ] || die "install.sh currently supports macOS only"
@@ -214,8 +158,10 @@ if ! have go; then
   brew install go
 fi
 
-choose_http_addr
-validate_http_addr
+detect_install_action
+if app_launch_agent_running; then
+  app_was_running=1
+fi
 
 src=$(source_dir)
 cd "$src"
@@ -225,32 +171,74 @@ build_dir=$(mktemp -d)
 tmp_dir="${tmp_dir:-}"
 trap 'rm -rf "$build_dir"; cleanup' EXIT INT TERM
 
-go build -o "$build_dir/clipport" ./cmd/clipport
+go build -o "$build_dir/clipctl" ./cmd/clipctl
 go build -o "$build_dir/clipportd" ./cmd/clipportd
+CGO_ENABLED=1 go build -o "$build_dir/clipport" ./cmd/clipport
 
-install -m 0755 "$build_dir/clipport" "$bin_dir/clipport"
+install -m 0755 "$build_dir/clipctl" "$bin_dir/clipctl"
 install -m 0755 "$build_dir/clipportd" "$bin_dir/clipportd"
+install -m 0755 "$build_dir/clipport" "$bin_dir/clipport"
 
-if [ ! -f "$config_path" ]; then
-  if can_prompt; then
-    "$bin_dir/clipport" onboard --output "$config_path" </dev/tty >/dev/tty
-  else
-    die "no config found; rerun install.sh from an interactive terminal"
-  fi
+if [ -f "$config_path" ]; then
+  config_exists=1
+fi
+if [ "$config_exists" -eq 0 ] || [ -n "$http_addr" ]; then
+  choose_http_addr
+fi
+validate_http_addr
+if [ "$config_exists" -eq 0 ] && [ -z "$iterm_key" ]; then
+  iterm_key="0x76-0x120000"
+fi
+write_menu_app_bundle
+write_app_launch_agent
+set -- install-record \
+  --config "$config_path" \
+  --bin-dir "$bin_dir" \
+  --app-launchd-plist "$app_plist_path" \
+  --app-path "$app_path"
+if [ "$config_exists" -eq 0 ]; then
+  set -- "$@" --ssh-config "$HOME/.ssh/config"
+fi
+if [ -n "$http_addr" ]; then
+  set -- "$@" --http "$http_addr"
+fi
+if [ -n "$iterm_key" ]; then
+  set -- "$@" --iterm-key "$iterm_key"
+fi
+"$bin_dir/clipctl" "$@"
+if [ "$app_was_running" -eq 1 ]; then
+  "$bin_dir/clipctl" restart --config "$config_path" >/dev/null
 fi
 
-configure_session_hooks
-write_launch_agent
-configure_iterm
-write_manifest
-
 case ":$PATH:" in
-  *":$bin_dir:"*) ;;
-  *) say "add to PATH: export PATH=\"$bin_dir:\$PATH\"" ;;
+  *":$bin_dir:"*)
+    path_hint=""
+    clipctl_cmd="clipctl"
+    ;;
+  *)
+    path_hint="export PATH=\"$bin_dir:\$PATH\""
+    clipctl_cmd="$bin_dir/clipctl"
+    ;;
 esac
 
-say "installed $bin_dir/clipport"
-say "installed $bin_dir/clipportd"
-say "daemon $label"
-say "wrote install manifest $manifest_path"
-say "uninstall with: $bin_dir/clipport uninstall"
+onboard_cmd="$clipctl_cmd onboard"
+default_config_path="$HOME/.config/clipport/config.toml"
+if [ "$config_path" != "$default_config_path" ]; then
+  onboard_cmd="$onboard_cmd --output $config_path"
+fi
+
+if [ -n "$path_hint" ]; then
+  say "Before you continue, add Clipport to PATH:"
+  say "  $path_hint"
+  say
+fi
+
+say "Clipport is ${install_result}."
+say
+if [ "$config_exists" -eq 0 ]; then
+  say "Get started:"
+  say "  $onboard_cmd"
+else
+  say "Configure hosts:"
+  say "  $clipctl_cmd onboard"
+fi

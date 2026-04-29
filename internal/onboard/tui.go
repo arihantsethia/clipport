@@ -277,7 +277,7 @@ func (m TUIModel) viewName() string {
 	var b strings.Builder
 	b.WriteString(titleStyle.Render("Create a remote machine") + "\n")
 	b.WriteString(subtleStyle.Render("A machine means one remote filesystem. Routes are the SSH aliases you use to reach it.") + "\n")
-	b.WriteString(subtleStyle.Render("Example: machine devbox can have routes devbox-lan and devbox-public.") + "\n\n")
+	b.WriteString(subtleStyle.Render("Example: machine devbox uses routes devbox-lan and devbox-public.") + "\n\n")
 	b.WriteString("Machine name\n")
 	b.WriteString(activeStyle.Render(" "+m.input+" ") + "\n\n")
 	if len(m.groups) > 0 {

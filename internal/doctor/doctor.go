@@ -76,8 +76,8 @@ func installedHTTPAddr() string {
 	if addr := os.Getenv("CLIPPORT_HTTP"); addr != "" {
 		return addr
 	}
-	if manifest, err := uninstall.LoadManifest(""); err == nil && manifest.HTTPAddr != "" {
-		return manifest.HTTPAddr
+	if local, err := config.LoadLocalBestEffort(""); err == nil && local.HTTPAddr != "" {
+		return local.HTTPAddr
 	}
 	return fmt.Sprintf("127.0.0.1:%d", sshsetup.DefaultRemotePort)
 }
@@ -116,11 +116,11 @@ func checkDaemon(socketPath string) Check {
 }
 
 func checkLaunchAgent() Check {
-	cmd := exec.Command("launchctl", "print", fmt.Sprintf("gui/%d/com.clipport.clipportd", os.Getuid()))
+	cmd := exec.Command("launchctl", "print", fmt.Sprintf("gui/%d/%s", os.Getuid(), uninstall.AppLaunchdLabel))
 	if err := cmd.Run(); err != nil {
-		return Check{Name: "launchd", OK: false, Detail: "com.clipport.clipportd not running"}
+		return Check{Name: "launchd", OK: false, Detail: uninstall.AppLaunchdLabel + " not running"}
 	}
-	return Check{Name: "launchd", OK: true, Detail: "com.clipport.clipportd"}
+	return Check{Name: "launchd", OK: true, Detail: uninstall.AppLaunchdLabel}
 }
 
 func checkItermBinding() Check {
@@ -133,8 +133,8 @@ func checkItermBinding() Check {
 	if err != nil {
 		return Check{Name: "iterm key", OK: false, Detail: err.Error()}
 	}
-	if strings.Contains(string(data), "clipport paste") {
-		return Check{Name: "iterm key", OK: true, Detail: "clipport paste"}
+	if strings.Contains(string(data), "clipctl paste") {
+		return Check{Name: "iterm key", OK: true, Detail: "clipctl paste"}
 	}
 	return Check{Name: "iterm key", OK: false, Detail: "binding not found"}
 }
@@ -157,13 +157,5 @@ func checkRemoteTmp(hostName string, route config.Route) Check {
 }
 
 func DefaultConfigPath() string {
-	path := os.Getenv("CLIPPORT_CONFIG")
-	if path != "" {
-		return path
-	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return ""
-	}
-	return home + "/.config/clipport/config.toml"
+	return config.DefaultPath()
 }
