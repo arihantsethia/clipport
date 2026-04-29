@@ -22,6 +22,7 @@ import (
 
 func main() {
 	socketPath := flag.String("socket", daemon.DefaultSocketPath(), "unix socket path")
+	debug := flag.Bool("debug", false, "print detailed paste diagnostics")
 	flag.Parse()
 
 	if flag.NArg() < 1 {
@@ -30,13 +31,15 @@ func main() {
 	}
 	cmd := flag.Arg(0)
 	switch cmd {
-	case "paste-image":
-		resp, err := daemon.Send(*socketPath, daemon.Request{Command: "paste_image", SessionKey: sessionKeyFromEnv()})
+	case "paste":
+		resp, err := daemon.Send(*socketPath, daemon.Request{Command: "paste", SessionKey: sessionKeyFromEnv()})
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "clipport: %v\n", err)
+			fmt.Fprintln(os.Stderr, pasteErrorMessage(resp, err, *debug))
 			os.Exit(1)
 		}
-		fmt.Print(resp.Path)
+		if output := pasteOutput(resp); output != "" {
+			fmt.Print(output)
+		}
 	case "session":
 		if flag.NArg() < 2 || flag.Arg(1) != "register" {
 			fmt.Fprintln(os.Stderr, "usage: clipport [--socket path] session register --machine name [--session-key key] [--ssh-alias alias] [--ssh-host host] [--ssh-port port] [--ssh-user user]")
@@ -97,9 +100,7 @@ func main() {
 		handleSSHCommand(flag.Args()[1:])
 	case "shims":
 		if flag.NArg() < 2 {
-			fmt.Fprintln(os.Stderr, "usage: clipport shims install --target ssh-alias [--token path] [--port port]")
-			fmt.Fprintln(os.Stderr, "       clipport shims setup --host machine [--config path] [--ssh-config path] [--token path] [--port port]")
-			fmt.Fprintln(os.Stderr, "       clipport shims uninstall --host machine [--config path] [--ssh-config path] [--remove-remote-token]")
+			shimsUsage()
 			os.Exit(2)
 		}
 		switch flag.Arg(1) {
@@ -153,9 +154,7 @@ func main() {
 				fmt.Printf("- %s / %s: forward %s; shims removed\n", route.Name, route.Target, route.ForwardStatus)
 			}
 		default:
-			fmt.Fprintln(os.Stderr, "usage: clipport shims install --target ssh-alias [--token path] [--port port]")
-			fmt.Fprintln(os.Stderr, "       clipport shims setup --host machine [--config path] [--ssh-config path] [--token path] [--port port]")
-			fmt.Fprintln(os.Stderr, "       clipport shims uninstall --host machine [--config path] [--ssh-config path] [--remove-remote-token]")
+			shimsUsage()
 			os.Exit(2)
 		}
 	case "uninstall":
@@ -256,7 +255,7 @@ func portFromAddr(addr string) int {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: clipport [--socket path] paste-image")
+	fmt.Fprintln(os.Stderr, "usage: clipport [--socket path] [--debug] paste")
 	fmt.Fprintln(os.Stderr, "       clipport [--socket path] register-session --host name")
 	fmt.Fprintln(os.Stderr, "       clipport [--socket path] session register --machine name [--session-key key] [--ssh-alias alias] [--ssh-host host] [--ssh-port port] [--ssh-user user]")
 	fmt.Fprintln(os.Stderr, "       clipport [--socket path] status")
@@ -270,6 +269,35 @@ func usage() {
 	fmt.Fprintln(os.Stderr, "       clipport shims setup --host machine [--config path] [--ssh-config path] [--token path] [--port port]")
 	fmt.Fprintln(os.Stderr, "       clipport shims uninstall --host machine [--config path] [--ssh-config path] [--remove-remote-token]")
 	fmt.Fprintln(os.Stderr, "       clipport onboard [--ssh-config path] [--output path] [--list]")
+}
+
+func shimsUsage() {
+	fmt.Fprintln(os.Stderr, "usage: clipport shims install --target ssh-alias [--token path] [--port port]")
+	fmt.Fprintln(os.Stderr, "       clipport shims setup --host machine [--config path] [--ssh-config path] [--token path] [--port port]")
+	fmt.Fprintln(os.Stderr, "       clipport shims uninstall --host machine [--config path] [--ssh-config path] [--remove-remote-token]")
+}
+
+func pasteErrorMessage(resp daemon.Response, err error, debug bool) string {
+	if !debug {
+		if resp.Error != "" {
+			return resp.Error
+		}
+		return daemon.PasteUnavailable
+	}
+	if resp.Error != "" && resp.Debug != "" {
+		return fmt.Sprintf("%s: %s", resp.Error, resp.Debug)
+	}
+	if resp.Error != "" {
+		return resp.Error
+	}
+	return fmt.Sprintf("%s: %v", daemon.PasteUnavailable, err)
+}
+
+func pasteOutput(resp daemon.Response) string {
+	if resp.Text != "" {
+		return resp.Text
+	}
+	return resp.Path
 }
 
 func registerSession(socketPath string, args []string, legacy bool) {
@@ -311,9 +339,7 @@ func registerSession(socketPath string, args []string, legacy bool) {
 
 func handleSSHCommand(args []string) {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: clipport ssh install-forward --host alias [--ssh-config path] [--port port]")
-		fmt.Fprintln(os.Stderr, "       clipport ssh install-session-hook --host alias --machine name [--ssh-config path] [--clipport-bin path]")
-		fmt.Fprintln(os.Stderr, "       clipport ssh install-session-hooks [--config path] [--ssh-config path] [--clipport-bin path]")
+		sshUsage()
 		os.Exit(2)
 	}
 	switch args[0] {
@@ -363,11 +389,15 @@ func handleSSHCommand(args []string) {
 			fmt.Println(line)
 		}
 	default:
-		fmt.Fprintln(os.Stderr, "usage: clipport ssh install-forward --host alias [--ssh-config path] [--port port]")
-		fmt.Fprintln(os.Stderr, "       clipport ssh install-session-hook --host alias --machine name [--ssh-config path] [--clipport-bin path]")
-		fmt.Fprintln(os.Stderr, "       clipport ssh install-session-hooks [--config path] [--ssh-config path] [--clipport-bin path]")
+		sshUsage()
 		os.Exit(2)
 	}
+}
+
+func sshUsage() {
+	fmt.Fprintln(os.Stderr, "usage: clipport ssh install-forward --host alias [--ssh-config path] [--port port]")
+	fmt.Fprintln(os.Stderr, "       clipport ssh install-session-hook --host alias --machine name [--ssh-config path] [--clipport-bin path]")
+	fmt.Fprintln(os.Stderr, "       clipport ssh install-session-hooks [--config path] [--ssh-config path] [--clipport-bin path]")
 }
 
 func installSessionHooks(configPath, sshConfigPath, clipportBin string) ([]string, error) {

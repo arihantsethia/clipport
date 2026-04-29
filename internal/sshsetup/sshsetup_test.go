@@ -15,7 +15,7 @@ func TestValidateHostAliasRejectsInjection(t *testing.T) {
 	}
 	for _, host := range bad {
 		if hostAliasRE.MatchString(host) {
-			t.Fatalf("host alias %q should be rejected", host)
+			t.Fatalf("host alias %q was accepted", host)
 		}
 	}
 }
@@ -24,7 +24,7 @@ func TestValidateHostAliasAllowsCommonAliases(t *testing.T) {
 	good := []string{"devbox", "devbox-public", "host.example.com", "host_1", "host+test"}
 	for _, host := range good {
 		if !hostAliasRE.MatchString(host) {
-			t.Fatalf("host alias %q should be allowed", host)
+			t.Fatalf("host alias %q was rejected", host)
 		}
 	}
 }

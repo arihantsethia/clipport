@@ -150,13 +150,13 @@ configure_iterm() {
     0|false|no) return ;;
     1|true|yes) ;;
     ask)
-      confirm "Configure iTerm hotkey for clipport paste-image?" y || return
+      confirm "Configure iTerm hotkey for clipport paste?" y || return
       ;;
     *) die "CLIPPORT_CONFIGURE_ITERM must be 0, 1, yes, no, ask, or unset" ;;
   esac
 
   prefs="$HOME/Library/Preferences/com.googlecode.iterm2.plist"
-  command_text="$bin_dir/clipport paste-image"
+  command_text="$bin_dir/clipport paste"
   mkdir -p "$(dirname "$prefs")"
   if [ ! -f "$prefs" ]; then
     printf '%s\n' '<?xml version="1.0" encoding="UTF-8"?>' \
@@ -171,7 +171,7 @@ configure_iterm() {
   /usr/libexec/PlistBuddy -c "Add :GlobalKeyMap:$iterm_key:Text string $command_text" "$prefs"
 
   iterm_configured=1
-  say "configured iTerm hotkey: Cmd-Shift-V -> clipport paste-image"
+  say "configured iTerm hotkey: Cmd-Shift-V -> clipport paste"
   say "restart iTerm if it was open during install"
 }
 

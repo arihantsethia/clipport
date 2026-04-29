@@ -16,19 +16,22 @@ type Uploader struct {
 	Now    func() time.Time
 }
 
-func RemotePath(localUser, hostName string, now time.Time) string {
+func RemotePath(localUser, ext string, now time.Time) string {
 	user := cleanPathPart(localUser)
-	host := cleanPathPart(hostName)
-	filename := fmt.Sprintf("clipboard-%s.png", now.Format("20060102-150405.000000"))
-	return path.Join("/tmp/clipport", user, host, filename)
+	ext = strings.TrimPrefix(strings.TrimSpace(ext), ".")
+	if ext == "" {
+		ext = "bin"
+	}
+	filename := fmt.Sprintf("clipboard-%s.%s", now.Format("20060102-150405.000000"), cleanPathPart(ext))
+	return path.Join("/tmp/clipport", user, filename)
 }
 
-func (u Uploader) Upload(data []byte, localUser string, host config.Host, route config.Route) (string, error) {
+func (u Uploader) Upload(data []byte, localUser string, _ config.Host, route config.Route, ext string) (string, error) {
 	now := time.Now
 	if u.Now != nil {
 		now = u.Now
 	}
-	remotePath := RemotePath(localUser, host.Name, now())
+	remotePath := RemotePath(localUser, ext, now())
 	runner := u.Runner
 	if runner == nil {
 		runner = sshCatUpload

@@ -19,7 +19,37 @@ func TestItermProviderUsesRunner(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if s.Terminal != "iterm" || s.DetectedHost != "vm-devbox" {
+	if s.Terminal != "iterm" || s.DetectedHost != "vm-devbox" || s.Kind != SessionRemote {
+		t.Fatalf("session = %+v", s)
+	}
+}
+
+func TestItermProviderClassifiesKnownLocalShellTitle(t *testing.T) {
+	p := ItermProvider{
+		Runner: func(name string, args ...string) ([]byte, error) {
+			return []byte("zsh\n"), nil
+		},
+	}
+	s, err := p.ActiveSession()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.Kind != SessionLocal || s.DetectedHost != "" {
+		t.Fatalf("session = %+v", s)
+	}
+}
+
+func TestItermProviderLeavesUnknownTitleUnclassified(t *testing.T) {
+	p := ItermProvider{
+		Runner: func(name string, args ...string) ([]byte, error) {
+			return []byte("production\n"), nil
+		},
+	}
+	s, err := p.ActiveSession()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.Kind != SessionUnknown {
 		t.Fatalf("session = %+v", s)
 	}
 }

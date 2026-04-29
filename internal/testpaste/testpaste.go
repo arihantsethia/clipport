@@ -59,7 +59,7 @@ func Run(cfg *config.Config, hostName string) (Result, error) {
 
 func runWithRoute(start time.Time, host config.Host, route config.Route, data []byte, localUser string) (Result, error) {
 	uploadStart := time.Now()
-	path, err := remote.Uploader{}.Upload(data, localUser, host, route)
+	path, err := remote.Uploader{}.Upload(data, localUser, host, route, "png")
 	if err != nil {
 		return Result{}, err
 	}

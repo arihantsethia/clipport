@@ -20,16 +20,23 @@ import (
 	"github.com/arihantsethia/clipport/internal/terminal"
 )
 
-type ImageProvider interface {
-	ReadPNG() ([]byte, error)
+type ClipboardReader interface {
+	Read() (clipboard.Item, error)
 }
 
+type PasteExecutor interface {
+	Paste() error
+}
+
+const PasteUnavailable = "clipport: paste unavailable"
+
 type Server struct {
-	Config   *config.Config
-	Sessions terminal.ActiveSessionProvider
-	Images   ImageProvider
-	Routes   *remote.Manager
-	Uploader remote.Uploader
+	Config    *config.Config
+	Sessions  terminal.ActiveSessionProvider
+	Clipboard ClipboardReader
+	Paster    PasteExecutor
+	Routes    *remote.Manager
+	Uploader  remote.Uploader
 
 	mu          sync.RWMutex
 	registered  map[string]sessionBinding
@@ -54,7 +61,8 @@ func NewServer(cfg *config.Config) *Server {
 	s := &Server{
 		Config:     cfg,
 		Sessions:   terminal.ItermProvider{},
-		Images:     clipboard.ImageProvider{},
+		Clipboard:  clipboard.Provider{},
+		Paster:     AppleScriptPaster{},
 		Routes:     remote.NewManager(nil),
 		registered: map[string]sessionBinding{},
 	}
@@ -96,16 +104,16 @@ func (s *Server) handleConn(conn net.Conn) {
 
 func (s *Server) Handle(req Request) Response {
 	switch req.Command {
-	case "paste_image":
+	case "paste":
 		session, err := s.sessionFromRequest(req)
 		if err != nil {
-			return Response{Error: err.Error()}
+			return pasteError(err)
 		}
-		path, err := s.PasteImage(session)
+		resp, err := s.Paste(session)
 		if err != nil {
-			return Response{Error: err.Error()}
+			return pasteError(err)
 		}
-		return Response{Path: path}
+		return resp
 	case "register_session":
 		machine := strings.TrimSpace(req.Machine)
 		if machine == "" {
@@ -139,51 +147,74 @@ func (s *Server) Handle(req Request) Response {
 
 func (s *Server) sessionFromRequest(req Request) (terminal.Session, error) {
 	if key := strings.TrimSpace(req.SessionKey); key != "" {
-		return terminal.Session{SessionKey: key}, nil
+		return terminal.Session{SessionKey: key, DetectedHost: strings.TrimSpace(req.Host)}, nil
 	}
 	return s.Sessions.ActiveSession()
 }
 
-func (s *Server) PasteImage(session terminal.Session) (string, error) {
+func (s *Server) Paste(session terminal.Session) (Response, error) {
 	start := time.Now()
 	if s.Config == nil {
-		return "", errors.New("server has no config")
+		return Response{}, errors.New("server has no config")
 	}
 	host, ok := s.resolveSessionHost(session)
 	if !ok {
-		if session.DetectedHost == "" {
+		if session.DetectedHost == "" && s.Sessions != nil {
 			if active, err := s.Sessions.ActiveSession(); err == nil {
 				session = active
 				host, ok = s.resolveSessionHost(session)
 			}
 		}
 		if !ok {
-			return "", s.sessionMatchError(session)
+			if session.Kind != terminal.SessionLocal {
+				return Response{}, s.sessionMatchError(session)
+			}
+			if s.Paster == nil {
+				return Response{}, s.sessionMatchError(session)
+			}
+			if err := s.Paster.Paste(); err != nil {
+				return Response{}, fmt.Errorf("local paste failed: %w", err)
+			}
+			return Response{}, nil
 		}
 	}
-	data, err := s.Images.ReadPNG()
+	if s.Clipboard == nil {
+		return Response{}, errors.New("server has no clipboard reader")
+	}
+	item, err := s.Clipboard.Read()
 	if err != nil {
-		return "", err
+		return Response{}, err
+	}
+	if item.Kind == clipboard.KindText {
+		return Response{Text: string(item.Data)}, nil
 	}
 	route := s.Routes.BestRoute(host)
 	localUser := "unknown"
 	if u, err := user.Current(); err == nil && u.Username != "" {
 		localUser = filepath.Base(u.Username)
 	}
-	path, err := s.Uploader.Upload(data, localUser, host, route)
+	path, err := s.Uploader.Upload(item.Data, localUser, host, route, extensionForKind(item.Kind))
 	if err != nil {
-		return "", err
+		return Response{}, err
 	}
 	s.recordTransfer(Transfer{
 		Host:      host.Name,
 		Route:     route.Name,
 		Target:    route.SSHTarget,
 		Path:      path,
-		Bytes:     len(data),
+		Bytes:     len(item.Data),
 		CreatedAt: time.Now().Format(time.RFC3339),
 	})
 	_ = recordRegistry(host.Name, route.Name, path, time.Since(start))
-	return path, nil
+	return Response{Path: path}, nil
+}
+
+func extensionForKind(kind clipboard.Kind) string {
+	return "png"
+}
+
+func pasteError(err error) Response {
+	return Response{Error: PasteUnavailable, Debug: err.Error()}
 }
 
 func (s *Server) resolveSessionHost(session terminal.Session) (config.Host, bool) {

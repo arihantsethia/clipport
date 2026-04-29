@@ -133,8 +133,8 @@ func checkItermBinding() Check {
 	if err != nil {
 		return Check{Name: "iterm key", OK: false, Detail: err.Error()}
 	}
-	if strings.Contains(string(data), "clipport paste-image") {
-		return Check{Name: "iterm key", OK: true, Detail: "clipport paste-image"}
+	if strings.Contains(string(data), "clipport paste") {
+		return Check{Name: "iterm key", OK: true, Detail: "clipport paste"}
 	}
 	return Check{Name: "iterm key", OK: false, Detail: "binding not found"}
 }

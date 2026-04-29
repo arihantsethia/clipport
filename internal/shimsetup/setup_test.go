@@ -100,11 +100,11 @@ func TestSetupRejectsNonAliasRouteTarget(t *testing.T) {
 			return "secret-token", nil
 		},
 		installForward: func(configPath, host string, remotePort int) (string, error) {
-			t.Fatal("installForward should not run for non-alias route target")
+			t.Fatal("installForward ran for non-alias route target")
 			return "", nil
 		},
 		installShims: func(target, token string, port int) error {
-			t.Fatal("installShims should not run for non-alias route target")
+			t.Fatal("installShims ran for non-alias route target")
 			return nil
 		},
 	})
@@ -171,15 +171,15 @@ func TestSetupRequiresLogicalHostName(t *testing.T) {
 			return cfg, nil
 		},
 		loadToken: func(path string) (string, error) {
-			t.Fatal("loadToken should not run for unknown logical host")
+			t.Fatal("loadToken ran for unknown logical host")
 			return "", nil
 		},
 		installForward: func(configPath, host string, remotePort int) (string, error) {
-			t.Fatal("installForward should not run for unknown logical host")
+			t.Fatal("installForward ran for unknown logical host")
 			return "", nil
 		},
 		installShims: func(target, token string, port int) error {
-			t.Fatal("installShims should not run for unknown logical host")
+			t.Fatal("installShims ran for unknown logical host")
 			return nil
 		},
 	})

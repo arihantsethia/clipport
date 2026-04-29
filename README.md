@@ -1,59 +1,231 @@
 <div align="center">
   <img src="assets/brand/icon.svg" width="96" height="96" alt="clipport icon">
   <h1>clipport</h1>
-  <p><strong>Paste macOS clipboard images into remote SSH and tmux sessions.</strong></p>
-  <p><code>clipport paste-image</code></p>
+  <p><strong>Make iTerm paste work in remote shells.</strong></p>
+  <p>
+    <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-blue.svg"></a>
+    <img alt="Go 1.26.1" src="https://img.shields.io/badge/go-1.26.1-00ADD8.svg">
+    <img alt="macOS" src="https://img.shields.io/badge/platform-macOS-lightgrey.svg">
+    <img alt="iTerm2" src="https://img.shields.io/badge/terminal-iTerm2-5319e7.svg">
+  </p>
 </div>
 
-`clipport` turns a local clipboard image into a file on the remote machine.
+Clipport sits behind an iTerm key binding. Copy text or an image on your Mac,
+press the paste shortcut in iTerm, and Clipport chooses the right behavior for
+the active session.
 
-Run:
+- Local shell: native paste.
+- Remote shell, text copied: paste the text.
+- Remote shell, image copied: upload the image over SSH and paste the remote
+  path.
 
-```bash
-clipport paste-image
-```
-
-It uploads the current macOS clipboard image and prints exactly one thing: the
-remote path.
+Example remote image path:
 
 ```text
-/tmp/clipport/<local-user>/<machine>/clipboard-20260428-132708.241851.png
+/tmp/clipport/yourname/clipboard-20260428-132708.241851.png
 ```
 
-Bind that command to an iTerm hotkey. When your cursor is in a remote shell, the
-hotkey inserts the uploaded file path at the prompt.
+This is useful when the thing consuming the paste is not on your Mac: a VM,
+remote workstation, cloud box, or coding-agent harness. The remote process
+cannot read your Mac clipboard, but it can read a file path on its own
+filesystem.
 
-## What it solves
+## Why
 
-Remote terminals cannot see your Mac clipboard. `clipport` bridges that gap for
-images by using the thing SSH already gives you: a remote filesystem.
+Use Clipport when you need to send local context into a remote terminal:
 
-Copy an image locally. Paste a path remotely.
+- paste screenshots into an agent session running on a VM
+- hand a design reference to a remote coding session
+- avoid manual `scp` for one-off clipboard images
+- keep one paste shortcut for local and SSH shells
 
-## Setup
+## Install
 
-### Prerequisites
+Requirements:
 
 - macOS
 - iTerm2
 - Homebrew
-- passwordless SSH to each configured route
-- writable `/tmp` on the remote machine
+- passwordless SSH to each remote machine
+- writable `/tmp` on each remote machine
 
-### Install
+Install:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/arihantsethia/clipport/main/install.sh | sh
 ```
 
-The installer:
+The installer builds `clipport` and `clipportd`, runs onboarding, starts the
+launchd daemon, and can bind `Cmd-Shift-V` in iTerm.
 
-- installs local dependencies with Homebrew
-- builds `clipport` and `clipportd` into `~/.local/bin`
-- runs onboarding
-- can install SSH session matching
-- starts the launchd daemon
-- can add the iTerm hotkey
+If `~/.local/bin` is not on your `PATH`, the installer prints the export line to
+add.
+
+## First Check
+
+```bash
+clipport doctor
+```
+
+Then open an SSH session in iTerm, copy text on your Mac, and press the
+Clipport key binding. Text should appear at the remote prompt.
+
+For images, copy an image or screenshot and press the same key binding. The
+remote prompt should receive a path like:
+
+```text
+/tmp/clipport/yourname/clipboard-20260428-132708.241851.png
+```
+
+Test the remote upload path without changing your clipboard:
+
+```bash
+clipport test-paste --host <machine>
+```
+
+## Agent Example
+
+```text
+You: copy a screenshot on the Mac
+You: press Cmd-Shift-V in the SSH session
+Shell: /tmp/clipport/yourname/clipboard-20260428-132708.241851.png
+You: "Open that image and fix the layout issue."
+```
+
+The agent sees a normal file path on the remote machine. You do not need to
+start a file server, drag files around, or change the app being inspected.
+
+## Paste Behavior
+
+iTerm runs this command behind the key binding:
+
+```bash
+clipport paste
+```
+
+Stdout is strict because iTerm inserts stdout into the terminal:
+
+| Session | Clipboard | Output |
+|---|---|---|
+| local | text or image | nothing; native Cmd-V is sent |
+| remote | text | clipboard text |
+| remote | image | `/tmp/clipport/...` path only |
+
+## Configuration
+
+Main config:
+
+```text
+~/.config/clipport/config.toml
+```
+
+A machine is one remote filesystem. A route is one SSH path to it.
+
+```toml
+default_host = "devbox"
+
+[[hosts]]
+name = "devbox"
+match_hosts = ["devbox", "devbox.example.com"]
+
+[[hosts.routes]]
+name = "lan"
+ssh_target = "devbox-lan"
+priority = 10
+
+[[hosts.routes]]
+name = "public"
+ssh_target = "devbox-public"
+priority = 20
+```
+
+Routes are tried by ascending `priority`. `ssh_target` is passed to OpenSSH, so
+your existing `~/.ssh/config` settings still apply.
+
+Rerun onboarding:
+
+```bash
+clipport onboard
+```
+
+List SSH hosts seen by onboarding:
+
+```bash
+clipport onboard --list
+```
+
+## Session Matching
+
+Clipport needs to map the active iTerm session to a configured machine. The
+installer can add OpenSSH `LocalCommand` hooks to do this automatically.
+
+Register the current iTerm session manually:
+
+```bash
+clipport session register --machine <machine>
+```
+
+Show configured hosts, registered sessions, and recent transfers:
+
+```bash
+clipport status
+```
+
+## Commands
+
+```bash
+# Usually hidden behind the iTerm key binding.
+clipport paste
+
+# Health check.
+clipport doctor
+
+# Upload an embedded test PNG to a configured machine.
+clipport test-paste --host <machine>
+
+# Status and recent transfers.
+clipport status
+```
+
+Debug paste failures:
+
+```bash
+clipport --debug paste
+```
+
+## Remote Clipboard Shims
+
+Most users do not need shims. They are only for remote programs that call
+`wl-paste` or `xclip` directly.
+
+Install shims for a configured machine:
+
+```bash
+clipport shims setup --host <machine>
+```
+
+Both local and remote tokens live at:
+
+```text
+~/.config/clipport/token
+```
+
+Permissions are `0600`. Tokens are not embedded in executable scripts. The
+local HTTP endpoint binds only to loopback.
+
+Remove shims:
+
+```bash
+clipport shims uninstall --host <machine>
+```
+
+Remove the remote token too:
+
+```bash
+clipport shims uninstall --host <machine> --remove-remote-token
+```
+
+## Install Options
 
 From a checkout:
 
@@ -61,114 +233,73 @@ From a checkout:
 ./install.sh
 ```
 
-To install somewhere else:
+Install binaries somewhere else:
 
 ```bash
 CLIPPORT_BIN=/some/bin ./install.sh
 ```
 
-The default iTerm hotkey is `Cmd-Shift-V`. Override it with
-`CLIPPORT_ITERM_KEY` if you already use that binding.
-
-Install choices are saved in `~/.config/clipport/install.toml`. This file does
-not contain secrets. `clipport uninstall` uses it later to remove the same
-launchd, binary, SSH, and iTerm artifacts that install created.
-
-### Check it
+Use a different iTerm key binding:
 
 ```bash
-clipport doctor
-clipport test-paste --host <machine>
-clipport status
+CLIPPORT_ITERM_KEY=<iterm-key-code> ./install.sh
 ```
 
-`test-paste` uploads an embedded PNG and verifies the remote file.
+Skip optional iTerm or SSH hook setup:
 
-## Usage
+```bash
+CLIPPORT_CONFIGURE_ITERM=no ./install.sh
+CLIPPORT_CONFIGURE_SESSION_HOOKS=no ./install.sh
+```
 
-### Paste path
+Install choices are saved in:
 
 ```text
-iTerm hotkey -> clipport paste-image -> clipportd -> SSH upload -> remote path
+~/.config/clipport/install.toml
 ```
 
-The path is printed to stdout and nothing else. This is what makes the command
-safe to bind directly to a terminal hotkey.
-
-### Remote shims
-
-Most users do not need shims.
-
-Use them only when a remote program calls `wl-paste` or `xclip` directly.
-
-Set up the SSH remote forward and install the shim:
-
-```bash
-clipport shims setup --host <machine>
-```
-
-The shim token is stored on the remote at `~/.config/clipport/token` with
-`0600` permissions.
-
-### SSH session matching
-
-The installer can add OpenSSH `LocalCommand` hooks for configured SSH aliases.
-When you open `ssh <alias>` in iTerm, clipport records that iTerm session as
-pointing at the logical machine. The next paste can then infer where to upload.
+The manifest contains no secrets. `clipport uninstall` uses it to remove the
+same launchd, binary, SSH, and iTerm artifacts created by install.
 
 ## Uninstall
-
-Remove installed artifacts:
 
 ```bash
 clipport uninstall
 ```
 
-This removes the launchd service, launch agent, installed binaries, clipport
-SSH config blocks, and the matching iTerm hotkey.
-
-Useful uninstall options:
+Preview:
 
 ```bash
 clipport uninstall --dry-run
-clipport uninstall --remove-data
-clipport uninstall --bin-dir ~/.local/bin
 ```
 
-By default, uninstall keeps local config, cache, token, and temporary files.
-`--remove-data` deletes them.
-
-Remove remote shims and SSH `RemoteForward` blocks:
+Remove local config, cache, token, and temporary files:
 
 ```bash
-clipport shims uninstall --host <machine>
-clipport shims uninstall --host <machine> --remove-remote-token
+clipport uninstall --remove-data
 ```
 
-Remote uninstall keeps the remote token by default.
+By default, uninstall keeps local data and remote shim tokens.
 
-## Reference
+## Troubleshooting
 
-### Benchmarks
+Start with:
 
-Measured on 2026-04-28 from macOS to a remote machine over public SSH.
+```bash
+clipport doctor
+```
 
-| Command | n | p50 | Notes |
-|---|---:|---:|---|
-| `clipport status` | 30 | 13 ms | local Unix socket |
-| `clipport test-paste --host <machine>` | 10 | 157 ms | cached route, upload, verify |
-| `test-paste` upload phase | 10 | 88 ms | SSH upload |
-| `test-paste` verify phase | 10 | 70 ms | remote `test -f` |
-| `clipport doctor` | 5 | 3.46 s | includes failed route probes |
+Common cases:
 
-### Troubleshooting
+- LAN route fails: expected when off that network; another route can still work.
+- SSH shell gets normal paste: run
+  `clipport session register --machine <machine>` in that iTerm session.
+- Hotkey does nothing: confirm iTerm runs `clipport paste`, then check
+  `/tmp/clipportd.err.log`.
+- Image upload fails: check passwordless SSH and remote write access to
+  `/tmp/clipport`.
 
-- `doctor` shows LAN failures: expected when off that network.
-- Active session cannot be matched: run
-  `clipport session register --machine <machine>` in the iTerm session.
-- Hotkey fails silently: run `clipport doctor` and check `/tmp/clipportd.err.log`.
-
-### Development
+## Development
 
 ```bash
 gofmt -w <changed go files>
@@ -177,4 +308,8 @@ go vet ./...
 go build ./cmd/clipport ./cmd/clipportd
 ```
 
-See [docs/architecture.md](docs/architecture.md) for the system design.
+See [ARCHITECTURE.md](ARCHITECTURE.md) for the contributor architecture map.
+
+## License
+
+Clipport is released under the [MIT License](LICENSE).

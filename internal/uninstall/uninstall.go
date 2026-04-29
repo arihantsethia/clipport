@@ -206,7 +206,7 @@ func removeItermHotkey(key string, dryRun bool) (bool, error) {
 	if err != nil {
 		return false, nil
 	}
-	if !strings.Contains(string(out), "clipport paste-image") {
+	if !strings.Contains(string(out), "clipport paste") {
 		return false, nil
 	}
 	if dryRun {

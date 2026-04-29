@@ -19,8 +19,10 @@ type Request struct {
 
 type Response struct {
 	Path   string `json:"path,omitempty"`
+	Text   string `json:"text,omitempty"`
 	Status Status `json:"status,omitempty"`
 	Error  string `json:"error,omitempty"`
+	Debug  string `json:"debug,omitempty"`
 }
 
 type Status struct {

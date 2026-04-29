@@ -21,6 +21,12 @@ func TestInstallPayloadKeepsTokenOutOfExecutableShim(t *testing.T) {
 	if !strings.Contains(shim, "cat \"$HOME/.config/clipport/token\"") {
 		t.Fatalf("shim does not read token file:\n%s", shim)
 	}
+	if !strings.Contains(shim, "/v1/clipboard") || strings.Contains(shim, "/v1/clipboard/png") {
+		t.Fatalf("shim does not use generic clipboard endpoint:\n%s", shim)
+	}
+	if !strings.Contains(shim, "2>\"$curl_stderr\"") || !strings.Contains(shim, "CLIPPORT_DEBUG") {
+		t.Fatalf("shim does not gate curl stderr behind debug:\n%s", shim)
+	}
 }
 
 func TestShimFallbackAvoidsLocalBinRecursion(t *testing.T) {

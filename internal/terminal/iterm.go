@@ -9,6 +9,7 @@ import (
 )
 
 var userHostRE = regexp.MustCompile(`([A-Za-z0-9._%+-]+)@([A-Za-z0-9._-]+)`)
+var localShellTitleRE = regexp.MustCompile(`^-?(zsh|bash|fish|sh|tmux)$`)
 
 type ItermProvider struct {
 	Runner func(name string, args ...string) ([]byte, error)
@@ -30,11 +31,16 @@ func (p ItermProvider) ActiveSession() (Session, error) {
 		return Session{}, errors.New("active iTerm session has no title")
 	}
 	host := ExtractHost(title)
+	kind := SessionRemote
+	if host == "" {
+		kind = classifyLocalTitle(title)
+	}
 	return Session{
 		Terminal:     "iterm",
 		SessionKey:   title,
 		DetectedHost: host,
 		RawTitle:     title,
+		Kind:         kind,
 	}, nil
 }
 
@@ -44,4 +50,12 @@ func ExtractHost(title string) string {
 		return m[2]
 	}
 	return ""
+}
+
+func classifyLocalTitle(title string) SessionKind {
+	normalized := strings.TrimSpace(strings.ToLower(title))
+	if localShellTitleRE.MatchString(normalized) {
+		return SessionLocal
+	}
+	return SessionUnknown
 }

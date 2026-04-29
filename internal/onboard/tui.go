@@ -227,7 +227,7 @@ func (m TUIModel) sidebar() string {
 	}
 	var b strings.Builder
 	b.WriteString(titleStyle.Render("clipport") + "\n")
-	b.WriteString(subtleStyle.Render("clipboard images over SSH") + "\n\n")
+	b.WriteString(subtleStyle.Render("clipboard files over SSH") + "\n\n")
 	for _, s := range steps {
 		line := s.label
 		if m.step == s.step {
@@ -293,7 +293,7 @@ func (m TUIModel) viewReview() string {
 	b.WriteString(titleStyle.Render("Review machines and routes") + "\n")
 	b.WriteString(subtleStyle.Render("Passwordless SSH is required. The daemon will keep route health warm in the background.") + "\n\n")
 	for _, g := range m.groups {
-		b.WriteString(successStyle.Render(g.Name) + subtleStyle.Render("  /tmp/clipport/<user>/"+g.Name+"/...") + "\n")
+		b.WriteString(successStyle.Render(g.Name) + subtleStyle.Render("  /tmp/clipport/<user>/...") + "\n")
 		for i, route := range g.Routes {
 			b.WriteString(fmt.Sprintf("  priority %-2d %s\n", (i+1)*10, route))
 		}
@@ -370,20 +370,12 @@ func (m *TUIModel) rebuildFilter() {
 
 func (m TUIModel) selectedRoutes() []string {
 	var routes []string
-	for _, idx := range m.filteredOrderAllHosts() {
+	for idx := range m.hosts {
 		if m.selected[idx] {
 			routes = append(routes, m.hosts[idx].Alias)
 		}
 	}
 	return routes
-}
-
-func (m TUIModel) filteredOrderAllHosts() []int {
-	indexes := make([]int, len(m.hosts))
-	for i := range m.hosts {
-		indexes[i] = i
-	}
-	return indexes
 }
 
 func (m TUIModel) hasGroup(name string) bool {
