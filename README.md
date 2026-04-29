@@ -20,6 +20,10 @@ right paste behavior.
 | remote | text | clipboard text |
 | remote | image | remote image path under `/tmp/clipport/...` |
 
+## Demo
+
+![Clipport demo](assets/demo.gif)
+
 Remote image example:
 
 ```text
