@@ -107,6 +107,45 @@ func TestTUIModelSelectsAndNamesHost(t *testing.T) {
 	}
 }
 
+func TestTUISelectViewExplainsHowToFinish(t *testing.T) {
+	m := NewTUIModel([]SSHHost{
+		{Alias: "devbox-lan", HostName: "192.0.2.10", User: "dev"},
+	})
+	m.input = "devbox"
+	m.step = stepSelect
+
+	view := m.viewSelect()
+
+	for _, want := range []string{
+		"enter save machine",
+		"d review and finish",
+		"After saving, add another machine or review and write the config.",
+	} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("view missing %q:\n%s", want, view)
+		}
+	}
+}
+
+func TestTUINameViewExplainsHowToExitLoopAfterFirstMachine(t *testing.T) {
+	m := NewTUIModel([]SSHHost{
+		{Alias: "devbox-lan", HostName: "192.0.2.10", User: "dev"},
+	})
+	m.groups = []HostGroup{{Name: "devbox", Routes: []string{"devbox-lan"}}}
+	m.step = stepName
+
+	view := m.viewName()
+
+	for _, want := range []string{
+		"Press esc to review the current machines and write the config.",
+		"esc review and finish",
+	} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("view missing %q:\n%s", want, view)
+		}
+	}
+}
+
 func TestMaybeConfigureItermAcceptsDefaultYes(t *testing.T) {
 	var called bool
 	var out bytes.Buffer

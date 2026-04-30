@@ -63,18 +63,48 @@ func TestPasteOutputReturnsTextBeforePath(t *testing.T) {
 	}
 }
 
-func TestMaybeRestartInstalledAppStartsLaunchAgent(t *testing.T) {
+func TestMaybeRestartInstalledAppRestartsRunningLaunchAgent(t *testing.T) {
 	var calls []string
-	err := maybeRestartInstalledApp(
-		func(string) (config.LocalConfig, error) {
-			return config.LocalConfig{AppLaunchdPlistPath: "/tmp/com.clipport.app.plist"}, nil
-		},
-		"",
+	err := maybeStartOrRestartInstalledApp(
+		config.LocalConfig{AppLaunchdPlistPath: "/tmp/com.clipport.app.plist"},
+		func(config.LocalConfig, int) (bool, error) { return true, nil },
 		func(name string, args ...string) error {
 			if name != "launchctl" {
 				t.Fatalf("name = %q", name)
 			}
 			calls = append(calls, strings.Join(append([]string{name}, args...), " "))
+			return nil
+		},
+		func([]string) error { return nil },
+		501,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{
+		"launchctl bootout gui/501 /tmp/com.clipport.app.plist",
+		"launchctl bootstrap gui/501 /tmp/com.clipport.app.plist",
+		"launchctl kickstart -k gui/501/" + uninstall.AppLaunchdLabel,
+	}
+	if strings.Join(calls, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("calls = %q, want %q", calls, want)
+	}
+}
+
+func TestMaybeRestartInstalledAppStartsStoppedLaunchAgent(t *testing.T) {
+	var calls []string
+	err := maybeStartOrRestartInstalledApp(
+		config.LocalConfig{AppLaunchdPlistPath: "/tmp/com.clipport.app.plist"},
+		func(config.LocalConfig, int) (bool, error) { return false, nil },
+		func(name string, args ...string) error {
+			if name != "launchctl" {
+				t.Fatalf("name = %q", name)
+			}
+			calls = append(calls, strings.Join(append([]string{name}, args...), " "))
+			return nil
+		},
+		func([]string) error {
+			t.Fatal("did not expect process cleanup for stopped app")
 			return nil
 		},
 		501,
@@ -83,7 +113,6 @@ func TestMaybeRestartInstalledAppStartsLaunchAgent(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := []string{
-		"launchctl bootout gui/501 /tmp/com.clipport.app.plist",
 		"launchctl bootstrap gui/501 /tmp/com.clipport.app.plist",
 		"launchctl kickstart -k gui/501/" + uninstall.AppLaunchdLabel,
 	}
@@ -355,7 +384,7 @@ func TestCleanupInstalledAppProcessesWaitsThenKillsStillRunningProcess(t *testin
 	var signals []syscall.Signal
 	cleanup := appProcessCleaner{
 		listClipportPIDs: func() ([]int, error) { return []int{42}, nil },
-		executablePath:    func(int) (string, error) { return "/tmp/bin/clipport", nil },
+		executablePath:   func(int) (string, error) { return "/tmp/bin/clipport", nil },
 		signal: func(pid int, sig syscall.Signal) error {
 			if pid != 42 {
 				t.Fatalf("pid = %d", pid)

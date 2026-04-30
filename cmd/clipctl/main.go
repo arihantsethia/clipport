@@ -648,7 +648,18 @@ func maybeRestartInstalledApp(loadLocal func(string) (config.LocalConfig, error)
 	if local.AppLaunchdPlistPath == "" {
 		return nil
 	}
-	return restartInstalledAppWithLocal(local, run, cleanupInstalledAppProcesses, uid)
+	return maybeStartOrRestartInstalledApp(local, launchAgentLoaded, run, cleanupInstalledAppProcesses, uid)
+}
+
+func maybeStartOrRestartInstalledApp(local config.LocalConfig, isRunning func(config.LocalConfig, int) (bool, error), run func(name string, args ...string) error, cleanup func([]string) error, uid int) error {
+	running, err := isRunning(local, uid)
+	if err != nil {
+		return err
+	}
+	if running {
+		return restartInstalledAppWithLocal(local, run, cleanup, uid)
+	}
+	return startInstalledAppWithLocal(local, run, uid)
 }
 
 func startInstalledApp(loadLocal func(string) (config.LocalConfig, error), configPath string, run func(name string, args ...string) error, uid int) error {
@@ -656,6 +667,10 @@ func startInstalledApp(loadLocal func(string) (config.LocalConfig, error), confi
 	if err != nil {
 		return err
 	}
+	return startInstalledAppWithLocal(local, run, uid)
+}
+
+func startInstalledAppWithLocal(local config.LocalConfig, run func(name string, args ...string) error, uid int) error {
 	guiDomain := fmt.Sprintf("gui/%d", uid)
 	if err := run("launchctl", "bootstrap", guiDomain, local.AppLaunchdPlistPath); err != nil && !isLaunchctlAlreadyLoaded(err) {
 		return err
@@ -697,6 +712,24 @@ func restartInstalledAppWithLocal(local config.LocalConfig, run func(name string
 	return run("launchctl", "kickstart", "-k", fmt.Sprintf("gui/%d/%s", uid, uninstall.AppLaunchdLabel))
 }
 
+func launchAgentLoaded(local config.LocalConfig, uid int) (bool, error) {
+	if local.AppLaunchdPlistPath == "" {
+		return false, nil
+	}
+	out, err := exec.Command("launchctl", "print", fmt.Sprintf("gui/%d/%s", uid, uninstall.AppLaunchdLabel)).CombinedOutput()
+	if err == nil {
+		return true, nil
+	}
+	text := strings.ToLower(strings.TrimSpace(string(out)))
+	if text == "" {
+		text = strings.ToLower(err.Error())
+	}
+	if strings.Contains(text, "could not find service") || strings.Contains(text, "not found") {
+		return false, nil
+	}
+	return false, err
+}
+
 func installedAppProcessPaths(local config.LocalConfig) []string {
 	var paths []string
 	if local.AppPath != "" {
@@ -714,23 +747,23 @@ func cleanupInstalledAppProcesses(paths []string) error {
 
 type appProcessCleaner struct {
 	listClipportPIDs func() ([]int, error)
-	executablePath    func(int) (string, error)
-	signal            func(int, syscall.Signal) error
-	isRunning         func(int) bool
-	sleep             func(time.Duration)
-	waitInterval      time.Duration
-	waitTimeout       time.Duration
+	executablePath   func(int) (string, error)
+	signal           func(int, syscall.Signal) error
+	isRunning        func(int) bool
+	sleep            func(time.Duration)
+	waitInterval     time.Duration
+	waitTimeout      time.Duration
 }
 
 func newAppProcessCleaner() appProcessCleaner {
 	return appProcessCleaner{
 		listClipportPIDs: listClipportPIDs,
-		executablePath:    executablePathForPID,
-		signal:            signalPID,
-		isRunning:         processRunning,
-		sleep:             time.Sleep,
-		waitInterval:      50 * time.Millisecond,
-		waitTimeout:       2 * time.Second,
+		executablePath:   executablePathForPID,
+		signal:           signalPID,
+		isRunning:        processRunning,
+		sleep:            time.Sleep,
+		waitInterval:     50 * time.Millisecond,
+		waitTimeout:      2 * time.Second,
 	}
 }
 

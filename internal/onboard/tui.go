@@ -268,7 +268,8 @@ func (m TUIModel) viewSelect() string {
 	}
 	b.WriteString("\n" + m.selectedSummary())
 	b.WriteString("\n" + m.configuredSummary())
-	b.WriteString("\n" + m.help("space toggle", "/ filter", "enter add machine", "d review", "r reset", "q quit"))
+	b.WriteString("\n" + subtleStyle.Render("After saving, add another machine or review and write the config.") + "\n")
+	b.WriteString(m.help("space toggle", "/ filter", "enter save machine", "d review and finish", "r reset", "q quit"))
 	b.WriteString(m.messageView())
 	return cardStyle.Width(86).Render(b.String())
 }
@@ -282,8 +283,13 @@ func (m TUIModel) viewName() string {
 	b.WriteString(activeStyle.Render(" "+m.input+" ") + "\n\n")
 	if len(m.groups) > 0 {
 		b.WriteString(m.configuredSummary() + "\n\n")
+		b.WriteString(subtleStyle.Render("Press esc to review the current machines and write the config.") + "\n\n")
 	}
-	b.WriteString(m.help("type name", "enter pick routes", "esc review", "q quit"))
+	nameHelp := []string{"type name", "enter pick routes", "q quit"}
+	if len(m.groups) > 0 {
+		nameHelp = append(nameHelp[:2], append([]string{"esc review and finish"}, nameHelp[2:]...)...)
+	}
+	b.WriteString(m.help(nameHelp...))
 	b.WriteString(m.messageView())
 	return cardStyle.Width(86).Render(b.String())
 }
