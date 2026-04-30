@@ -139,7 +139,7 @@ Menu functions:
 - show running, stopped, or error state
 - restart `clipportd`
 - run doctor checks and open a report file
-- show configured hosts in a submenu and recent transfers from daemon status
+- show configured hosts as top-level menu rows
 - open config and daemon log files
 - stop `clipportd` when Clipport quits
 
@@ -181,8 +181,15 @@ Config terms:
 - route: one SSH path to that machine, represented by `config.Route`
 
 Routes are sorted by ascending `priority`. `remote.Manager` caches the best
-known route for each machine. Probing uses a quick TCP check when possible and
-falls back to `ssh ... true`.
+known route for each machine for about one hour. Preferred route selection uses
+a small synthetic upload over the same OpenSSH path as image paste. If measured
+route times are close, config priority wins. Reachability probing is only a
+fallback when upload probing cannot find a working route.
+
+On macOS, the daemon listens for routing-table network changes, invalidates
+the route cache after a short debounce, and refreshes routes in the background.
+An image upload failure also invalidates the selected route and retries once
+with a freshly measured route.
 
 Upload transport is OpenSSH. Do not add another SSH transport unless there is a
 clear operational need.

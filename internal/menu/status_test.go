@@ -13,9 +13,9 @@ func TestDaemonSummaryUsesSocketStatus(t *testing.T) {
 		Status: func() (daemon.Status, error) {
 			return daemon.Status{
 				ConfigHosts: []string{"devbox"},
-				Recent: []daemon.Transfer{{
-					Host: "devbox",
-					Path: "/tmp/clipport/user/clipboard.png",
+				Hosts: []daemon.HostStatus{{
+					Name:   "devbox",
+					Target: "192.168.1.20",
 				}},
 			}, nil
 		},
@@ -29,8 +29,8 @@ func TestDaemonSummaryUsesSocketStatus(t *testing.T) {
 	if summary.Title != "Clipport: Running" {
 		t.Fatalf("title = %q", summary.Title)
 	}
-	if len(summary.RecentTransfers) != 1 {
-		t.Fatalf("summary = %+v", summary)
+	if len(summary.HostLabels) != 1 || summary.HostLabels[0] != "devbox (192.168.1.20)" {
+		t.Fatalf("host labels = %+v", summary.HostLabels)
 	}
 }
 

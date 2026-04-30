@@ -27,9 +27,16 @@ type Response struct {
 
 type Status struct {
 	ConfigHosts    []string         `json:"config_hosts,omitempty"`
+	Hosts          []HostStatus     `json:"hosts,omitempty"`
 	Recent         []Transfer       `json:"recent,omitempty"`
 	Registered     int              `json:"registered,omitempty"`
 	RecentBindings []SessionBinding `json:"recent_bindings,omitempty"`
+}
+
+type HostStatus struct {
+	Name   string `json:"name"`
+	Route  string `json:"route,omitempty"`
+	Target string `json:"target,omitempty"`
 }
 
 type Transfer struct {

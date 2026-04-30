@@ -8,7 +8,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"syscall"
 	"time"
@@ -25,7 +24,6 @@ var templateIconPNG []byte
 
 const refreshEvery = 5 * time.Second
 const maxHostMenuItems = 8
-const maxRecentTransferItems = 4
 
 var activeApp *trayApp
 
@@ -45,9 +43,7 @@ type trayApp struct {
 
 	statusItem  *systray.MenuItem
 	detailItem  *systray.MenuItem
-	hostsMenu   *systray.MenuItem
 	hostItems   []*systray.MenuItem
-	recent      []*systray.MenuItem
 	restartItem *systray.MenuItem
 	doctorItem  *systray.MenuItem
 	reportItem  *systray.MenuItem
@@ -169,22 +165,10 @@ func (a *trayApp) buildMenu() {
 	a.detailItem = systray.AddMenuItem("", "Status detail")
 	a.detailItem.Disable()
 	a.detailItem.Hide()
-	a.hostsMenu = systray.AddMenuItem("Hosts", "Configured hosts")
 	for range maxHostMenuItems {
-		item := a.hostsMenu.AddSubMenuItem("", "Configured host")
-		item.Disable()
+		item := systray.AddMenuItem("", "Configured host")
 		item.Hide()
 		a.hostItems = append(a.hostItems, item)
-	}
-
-	systray.AddSeparator()
-	recentHeader := systray.AddMenuItem("Recent Transfers", "Recent transfers")
-	recentHeader.Disable()
-	for range maxRecentTransferItems {
-		item := systray.AddMenuItem("", "Recent transfer")
-		item.Disable()
-		item.Hide()
-		a.recent = append(a.recent, item)
 	}
 
 	systray.AddSeparator()
@@ -246,22 +230,17 @@ func (a *trayApp) refresh() {
 		a.detailItem.SetTitle(summary.Detail)
 		a.detailItem.Show()
 	}
-	a.updateHosts(summary.ConfigHosts)
-	a.updateRecent(summary.RecentTransfers)
+	a.updateHosts(summary.HostLabels)
 	a.restartItem.Enable()
 }
 
 func (a *trayApp) updateHosts(hosts []string) {
 	if len(hosts) == 0 {
-		a.hostsMenu.SetTitle("Hosts (none)")
-		a.hostsMenu.Disable()
 		for _, item := range a.hostItems {
 			item.Hide()
 		}
 		return
 	}
-	a.hostsMenu.SetTitle(fmt.Sprintf("Hosts (%d)", len(hosts)))
-	a.hostsMenu.Enable()
 	for i, item := range a.hostItems {
 		if i >= len(hosts) {
 			item.Hide()
@@ -272,17 +251,7 @@ func (a *trayApp) updateHosts(hosts []string) {
 		} else {
 			item.SetTitle(hosts[i])
 		}
-		item.Show()
-	}
-}
-
-func (a *trayApp) updateRecent(transfers []daemon.Transfer) {
-	for i, item := range a.recent {
-		if i >= len(transfers) {
-			item.Hide()
-			continue
-		}
-		item.SetTitle(menu.TransferLabel(transfers[i]))
+		item.Enable()
 		item.Show()
 	}
 }
@@ -377,11 +346,4 @@ func (a *trayApp) open(path string) {
 func fileExists(path string) bool {
 	_, err := os.Stat(path)
 	return err == nil
-}
-
-func init() {
-	if runtime.GOOS != "darwin" {
-		fmt.Fprintf(os.Stderr, "clipport is only supported on macOS, got %s\n", runtime.GOOS)
-		os.Exit(1)
-	}
 }

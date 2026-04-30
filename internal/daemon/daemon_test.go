@@ -119,6 +119,104 @@ func TestPasteReturnsRemotePNGPath(t *testing.T) {
 	}
 }
 
+func TestStatusIncludesPreferredHostRouteTarget(t *testing.T) {
+	cfg := &config.Config{Hosts: []config.Host{{
+		Name: "devbox",
+		Routes: []config.Route{
+			{Name: "public", SSHTarget: "devbox.example.com", Priority: 20},
+			{Name: "lan", SSHTarget: "192.168.1.20", Priority: 10},
+		},
+	}}}
+	probed := false
+	s := &Server{
+		Config: cfg,
+		Routes: remote.NewManager(func(target string) bool {
+			probed = true
+			return target == "192.168.1.20"
+		}),
+		registered: map[string]sessionBinding{},
+	}
+	s.Routes.Tester = func(route config.Route) (time.Duration, bool) {
+		probed = true
+		return 0, false
+	}
+
+	st := s.Status()
+	if len(st.Hosts) != 1 {
+		t.Fatalf("hosts = %+v", st.Hosts)
+	}
+	if st.Hosts[0].Name != "devbox" || st.Hosts[0].Route != "lan" || st.Hosts[0].Target != "192.168.1.20" {
+		t.Fatalf("host status = %+v", st.Hosts[0])
+	}
+	if probed {
+		t.Fatal("status should not probe routes")
+	}
+}
+
+func TestPasteRetriesImageUploadWithFreshRoute(t *testing.T) {
+	cfg := &config.Config{Hosts: []config.Host{{
+		Name:       "devbox",
+		MatchHosts: []string{"vm-devbox"},
+		Routes: []config.Route{
+			{Name: "public", SSHTarget: "devbox-public", Priority: 20},
+			{Name: "lan", SSHTarget: "devbox-lan", Priority: 10},
+		},
+	}}}
+	routes := remote.NewManager(func(target string) bool { return true })
+	publicFirst := true
+	routes.Tester = func(route config.Route) (time.Duration, bool) {
+		if publicFirst {
+			if route.Name == "public" {
+				return 80 * time.Millisecond, true
+			}
+			return 250 * time.Millisecond, true
+		}
+		if route.Name == "lan" {
+			return 60 * time.Millisecond, true
+		}
+		return 300 * time.Millisecond, true
+	}
+	attempts := 0
+	s := &Server{
+		Config:    cfg,
+		Sessions:  fakeSessions{terminal.Session{SessionKey: "s1", DetectedHost: "vm-devbox"}},
+		Clipboard: fakeClipboard{item: clipboard.Item{Kind: clipboard.KindPNG, Data: []byte("png")}},
+		Routes:    routes,
+		Uploader: remote.Uploader{
+			Now: func() time.Time { return time.Date(2026, 4, 28, 12, 15, 41, 0, time.UTC) },
+			Runner: func(data []byte, target, remotePath string) error {
+				attempts++
+				if attempts == 1 {
+					publicFirst = false
+					if target != "devbox-public" {
+						t.Fatalf("first target = %q, want devbox-public", target)
+					}
+					return errors.New("route went stale")
+				}
+				if target != "devbox-lan" {
+					t.Fatalf("retry target = %q, want devbox-lan", target)
+				}
+				return nil
+			},
+		},
+		registered: map[string]sessionBinding{},
+	}
+
+	resp, err := s.Paste(terminal.Session{SessionKey: "s1", DetectedHost: "vm-devbox"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if attempts != 2 {
+		t.Fatalf("attempts = %d, want 2", attempts)
+	}
+	if resp.Path == "" {
+		t.Fatal("path is empty")
+	}
+	if st := s.Status(); st.Recent[0].Route != "lan" {
+		t.Fatalf("recorded route = %q, want lan", st.Recent[0].Route)
+	}
+}
+
 func TestHandlePasteReturnsRemoteTextDirectly(t *testing.T) {
 	cfg := &config.Config{Hosts: []config.Host{{
 		Name:       "devbox",

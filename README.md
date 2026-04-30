@@ -169,8 +169,8 @@ clipctl status
 ## Menu Bar
 
 When started, the menu bar app supervises `clipportd`. It shows daemon health,
-configured hosts, recent transfers, and shortcuts to restart Clipport, run
-`clipctl doctor`, and open config or log files.
+configured hosts, and shortcuts to restart Clipport, run `clipctl doctor`, and
+open config or log files.
 
 `clipportd` exits when the menu bar app exits. Choosing `Quit` stops the
 daemon and exits Clipport. The menu bar app does not change the

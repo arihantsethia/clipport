@@ -209,19 +209,22 @@ func (s *Server) Paste(session terminal.Session) (Response, error) {
 	if u, err := user.Current(); err == nil && u.Username != "" {
 		localUser = filepath.Base(u.Username)
 	}
-	path, err := s.Uploader.Upload(item.Data, localUser, host, route, extensionForKind(item.Kind))
+	path, usedRoute, err := s.Uploader.UploadWithRetry(item.Data, localUser, host, route, extensionForKind(item.Kind), func() config.Route {
+		s.Routes.InvalidateHost(host.Name)
+		return s.Routes.BestRoute(host)
+	})
 	if err != nil {
 		return Response{}, err
 	}
 	s.recordTransfer(Transfer{
 		Host:      host.Name,
-		Route:     route.Name,
-		Target:    route.SSHTarget,
+		Route:     usedRoute.Name,
+		Target:    usedRoute.SSHTarget,
 		Path:      path,
 		Bytes:     len(item.Data),
 		CreatedAt: time.Now().Format(time.RFC3339),
 	})
-	_ = recordRegistry(host.Name, route.Name, path, time.Since(start))
+	_ = recordRegistry(host.Name, usedRoute.Name, path, time.Since(start))
 	return Response{Path: path}, nil
 }
 
@@ -253,6 +256,13 @@ func (s *Server) Status() Status {
 	if s.Config != nil {
 		for _, h := range s.Config.Hosts {
 			st.ConfigHosts = append(st.ConfigHosts, h.Name)
+			hostStatus := HostStatus{Name: h.Name}
+			if s.Routes != nil {
+				route := s.Routes.CachedRoute(h)
+				hostStatus.Route = route.Name
+				hostStatus.Target = route.SSHTarget
+			}
+			st.Hosts = append(st.Hosts, hostStatus)
 		}
 	}
 	s.mu.RLock()

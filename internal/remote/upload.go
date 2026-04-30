@@ -42,9 +42,28 @@ func (u Uploader) Upload(data []byte, localUser string, _ config.Host, route con
 	return remotePath, nil
 }
 
+func (u Uploader) UploadWithRetry(data []byte, localUser string, host config.Host, route config.Route, ext string, refresh func() config.Route) (string, config.Route, error) {
+	path, err := u.Upload(data, localUser, host, route, ext)
+	if err == nil {
+		return path, route, nil
+	}
+	if refresh == nil {
+		return "", route, err
+	}
+	fresh := refresh()
+	if fresh.Name == "" || fresh.Name == route.Name {
+		return "", route, err
+	}
+	path, retryErr := u.Upload(data, localUser, host, fresh, ext)
+	if retryErr != nil {
+		return "", fresh, retryErr
+	}
+	return path, fresh, nil
+}
+
 func sshCatUpload(data []byte, target, remotePath string) error {
 	dir := path.Dir(remotePath)
-	cmd := exec.Command("ssh", target, "mkdir -p "+shellQuote(dir)+" && cat > "+shellQuote(remotePath))
+	cmd := exec.Command("ssh", "-o", "PermitLocalCommand=no", target, "mkdir -p "+shellQuote(dir)+" && cat > "+shellQuote(remotePath))
 	cmd.Stdin = bytes.NewReader(data)
 	out, err := cmd.CombinedOutput()
 	if err != nil {

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"log"
@@ -40,6 +41,9 @@ func main() {
 		go exitWhenParentDies(*parentPID)
 	}
 	server := daemon.NewServer(cfg)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	server.Routes.RefreshOnNetworkChange(ctx, cfg.Hosts)
 	if *httpAddr != "" {
 		if err := requireLoopback(*httpAddr); err != nil {
 			fmt.Fprintf(os.Stderr, "clipportd: %v\n", err)

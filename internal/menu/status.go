@@ -1,10 +1,6 @@
 package menu
 
-import (
-	"strings"
-
-	"github.com/arihantsethia/clipport/internal/daemon"
-)
+import "github.com/arihantsethia/clipport/internal/daemon"
 
 type State string
 
@@ -20,11 +16,10 @@ type Checker struct {
 }
 
 type Summary struct {
-	State           State
-	Title           string
-	Detail          string
-	ConfigHosts     []string
-	RecentTransfers []daemon.Transfer
+	State      State
+	Title      string
+	Detail     string
+	HostLabels []string
 }
 
 func (c Checker) DaemonSummary() Summary {
@@ -32,10 +27,9 @@ func (c Checker) DaemonSummary() Summary {
 		status, err := c.Status()
 		if err == nil {
 			return Summary{
-				State:           StateRunning,
-				Title:           "Clipport: Running",
-				ConfigHosts:     append([]string(nil), status.ConfigHosts...),
-				RecentTransfers: append([]daemon.Transfer(nil), status.Recent...),
+				State:      StateRunning,
+				Title:      "Clipport: Running",
+				HostLabels: HostLabels(status),
 			}
 		}
 		return Summary{State: StateStopped, Title: "Clipport: Stopped", Detail: err.Error()}
@@ -43,16 +37,20 @@ func (c Checker) DaemonSummary() Summary {
 	return Summary{State: StateStopped, Title: "Clipport: Stopped", Detail: "daemon status unavailable"}
 }
 
-func TransferLabel(t daemon.Transfer) string {
-	parts := []string{}
-	if t.Host != "" {
-		parts = append(parts, t.Host)
+func HostLabels(status daemon.Status) []string {
+	if len(status.Hosts) == 0 {
+		return append([]string(nil), status.ConfigHosts...)
 	}
-	if t.Path != "" {
-		parts = append(parts, t.Path)
+	labels := make([]string, 0, len(status.Hosts))
+	for _, host := range status.Hosts {
+		labels = append(labels, HostLabel(host))
 	}
-	if len(parts) == 0 {
-		return "transfer"
+	return labels
+}
+
+func HostLabel(host daemon.HostStatus) string {
+	if host.Target == "" {
+		return host.Name
 	}
-	return strings.Join(parts, "  ")
+	return host.Name + " (" + host.Target + ")"
 }
