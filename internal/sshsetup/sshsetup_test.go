@@ -79,6 +79,96 @@ func TestInstallForwardDoesNotTreatPrefixAliasAsInstalled(t *testing.T) {
 	}
 }
 
+func TestInstallForwardWritesHardenedForwardBlock(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "config")
+	if err := os.WriteFile(configPath, []byte("Host existing\n    HostName example.com\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := InstallForward(configPath, "dev", 18765); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(data)
+	for _, want := range []string{
+		"Host dev",
+		"    ControlMaster no",
+		"    ExitOnForwardFailure yes",
+		"    ServerAliveInterval 15",
+		"    ServerAliveCountMax 2",
+		"    RemoteForward 127.0.0.1:18765 127.0.0.1:18765",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("config missing %q:\n%s", want, text)
+		}
+	}
+}
+
+func TestInstallForwardPrecedesExistingHostBlock(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "config")
+	input := "Host dev\n    HostName dev.example.com\n    ControlMaster auto\n"
+	if err := os.WriteFile(configPath, []byte(input), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := InstallForward(configPath, "dev", 18765); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(data)
+	forward := strings.Index(text, "# clipport begin dev")
+	existing := strings.Index(text, "    HostName dev.example.com")
+	if forward < 0 || existing < 0 || forward > existing {
+		t.Fatalf("forward block should precede existing host block:\n%s", text)
+	}
+}
+
+func TestInstallForwardUpgradesExistingManagedBlock(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "config")
+	old := "Host dev\n    HostName dev.example.com\n    ControlMaster auto\n\n# clipport begin dev\nHost dev\n    RemoteForward 127.0.0.1:18765 127.0.0.1:18765\n# clipport end dev\n"
+	if err := os.WriteFile(configPath, []byte(old), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	backup, err := InstallForward(configPath, "dev", 18765)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if backup == "" {
+		t.Fatal("expected backup path when upgrading")
+	}
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(data)
+	if strings.Count(text, "# clipport begin dev") != 1 {
+		t.Fatalf("expected one managed block:\n%s", text)
+	}
+	if strings.Index(text, "# clipport begin dev") > strings.Index(text, "    HostName dev.example.com") {
+		t.Fatalf("upgraded forward block should move before existing host block:\n%s", text)
+	}
+	for _, want := range []string{
+		"    ControlMaster no",
+		"    ExitOnForwardFailure yes",
+		"    ServerAliveInterval 15",
+		"    ServerAliveCountMax 2",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("upgraded config missing %q:\n%s", want, text)
+		}
+	}
+}
+
 func TestInstallForwardIsIdempotentForExactMarker(t *testing.T) {
 	dir := t.TempDir()
 	configPath := filepath.Join(dir, "config")

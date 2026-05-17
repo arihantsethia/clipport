@@ -38,16 +38,38 @@ func InstallForward(configPath, host string, remotePort int) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	block := fmt.Sprintf("\n# clipport begin %s\nHost %s\n    RemoteForward 127.0.0.1:%d 127.0.0.1:%d\n# clipport end %s\n", host, host, remotePort, remotePort, host)
-	if hasExactLine(data, "# clipport begin "+host) {
+	block := renderForwardBlock(host, remotePort)
+	begin := "# clipport begin " + host
+	end := "# clipport end " + host
+	updated, existing, err := removeBlocks(string(data), func(line string) bool {
+		return strings.TrimRight(line, "\r") == begin
+	}, func(line string) bool {
+		return strings.TrimRight(line, "\r") == end
+	})
+	if err != nil {
+		return "", err
+	}
+	updated = insertBeforeHost(updated, host, block)
+	if existing && updated == string(data) {
 		return "", fmt.Errorf("%w for %s", ErrForwardAlreadyInstalled, host)
 	}
-	backup, err := writeConfigWithBackup(configPath, data, append(data, []byte(block)...))
+	backup, err := writeConfigWithBackup(configPath, data, []byte(updated))
 	if err != nil {
 		return "", err
 	}
 	_ = markForward(host)
 	return backup, nil
+}
+
+func renderForwardBlock(host string, remotePort int) string {
+	return fmt.Sprintf(
+		"# clipport begin %s\nHost %s\n    ControlMaster no\n    ExitOnForwardFailure yes\n    ServerAliveInterval 15\n    ServerAliveCountMax 2\n    RemoteForward 127.0.0.1:%d 127.0.0.1:%d\n# clipport end %s\n",
+		host,
+		host,
+		remotePort,
+		remotePort,
+		host,
+	)
 }
 
 func InstallSessionHook(configPath, host, machine, clipctlBin string) (string, error) {
@@ -177,6 +199,27 @@ func removeBlocks(text string, isBegin, isEnd func(string) bool) (string, bool, 
 		return "", false, fmt.Errorf("unterminated clipport SSH config block")
 	}
 	return strings.Join(kept, ""), removed, nil
+}
+
+func insertBeforeHost(text, host, block string) string {
+	lines := strings.SplitAfter(text, "\n")
+	for i, line := range lines {
+		fields := strings.Fields(line)
+		if len(fields) >= 2 && strings.EqualFold(fields[0], "Host") {
+			for _, pattern := range fields[1:] {
+				if pattern == host {
+					return strings.Join(lines[:i], "") + block + strings.Join(lines[i:], "")
+				}
+			}
+		}
+	}
+	if text != "" && !strings.HasSuffix(text, "\n") {
+		text += "\n"
+	}
+	if text == "" {
+		return block
+	}
+	return text + "\n" + block
 }
 
 func isClipportBegin(line string) bool {

@@ -22,7 +22,7 @@ func Install(target, token string, port int) error {
 		port = 18765
 	}
 	payload := renderInstallPayload(token, port)
-	cmd := exec.Command("ssh", target, "sh")
+	cmd := sshShCommand(target)
 	cmd.Stdin = strings.NewReader(payload)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
@@ -37,13 +37,17 @@ func Uninstall(target string, removeToken bool) error {
 		return fmt.Errorf("target is required")
 	}
 	payload := renderUninstallPayload(removeToken)
-	cmd := exec.Command("ssh", target, "sh")
+	cmd := sshShCommand(target)
 	cmd.Stdin = strings.NewReader(payload)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("uninstall shims on %s failed: %w: %s", target, err, strings.TrimSpace(string(out)))
 	}
 	return nil
+}
+
+func sshShCommand(target string) *exec.Cmd {
+	return exec.Command("ssh", "-o", "PermitLocalCommand=no", "-o", "ClearAllForwardings=yes", target, "sh")
 }
 
 func renderInstallPayload(token string, port int) string {

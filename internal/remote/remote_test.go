@@ -2,6 +2,7 @@ package remote
 
 import (
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -171,6 +172,43 @@ func TestUploaderCanRetryWithFreshRoute(t *testing.T) {
 	}
 	if path != "/tmp/clipport/dev/clipboard-20260428-121541.000000.png" {
 		t.Fatalf("path = %q", path)
+	}
+}
+
+func TestSSHUploadCommandUsesBoundedNonInteractiveOptions(t *testing.T) {
+	cmd := sshCatUploadCommand([]byte("png"), "devbox", "/tmp/clipport/dev/a.png")
+	assertArgsContain(t, cmd.Args,
+		"-o\nPermitLocalCommand=no",
+		"-o\nClearAllForwardings=yes",
+		"-o\nBatchMode=yes",
+		"-o\nConnectTimeout=3",
+		"-o\nConnectionAttempts=1",
+		"-o\nServerAliveInterval=5",
+		"-o\nServerAliveCountMax=1",
+		"-o\nControlMaster=no",
+	)
+}
+
+func TestForwardHealthCommandChecksRemoteForwardWithRemoteToken(t *testing.T) {
+	cmd := forwardHealthCommand("devbox", "127.0.0.1:18765")
+	assertArgsContain(t, cmd.Args,
+		"-o\nPermitLocalCommand=no",
+		"-o\nClearAllForwardings=yes",
+		"-o\nBatchMode=yes",
+		"-o\nConnectTimeout=2",
+		"devbox",
+		"cat \"$HOME/.config/clipport/token\"",
+		"http://127.0.0.1:18765/v1/health",
+	)
+}
+
+func assertArgsContain(t *testing.T, args []string, wants ...string) {
+	t.Helper()
+	text := strings.Join(args, "\n")
+	for _, want := range wants {
+		if !strings.Contains(text, want) {
+			t.Fatalf("args missing %q in:\n%s", want, text)
+		}
 	}
 }
 

@@ -63,3 +63,17 @@ func TestUninstallPayloadRemovesTokenOnlyWhenRequested(t *testing.T) {
 		t.Fatalf("payload does not remove token when requested:\n%s", payload)
 	}
 }
+
+func TestShimInstallSSHCommandDoesNotRequestForwarding(t *testing.T) {
+	args := strings.Join(sshShCommand("devbox").Args, "\n")
+	for _, want := range []string{
+		"-o\nPermitLocalCommand=no",
+		"-o\nClearAllForwardings=yes",
+		"devbox",
+		"sh",
+	} {
+		if !strings.Contains(args, want) {
+			t.Fatalf("ssh args missing %q in:\n%s", want, args)
+		}
+	}
+}

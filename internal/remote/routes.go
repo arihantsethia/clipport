@@ -196,7 +196,7 @@ func Probe(target string) bool {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "ssh", "-o", "PermitLocalCommand=no", "-o", "BatchMode=yes", "-o", "ConnectTimeout=1", target, "true")
+	cmd := exec.CommandContext(ctx, "ssh", "-o", "PermitLocalCommand=no", "-o", "ClearAllForwardings=yes", "-o", "BatchMode=yes", "-o", "ConnectTimeout=1", target, "true")
 	return cmd.Run() == nil
 }
 
@@ -206,7 +206,7 @@ func ProbeUpload(route config.Route) (time.Duration, bool) {
 	}
 	payload := make([]byte, probePayloadSize)
 	remotePath := fmt.Sprintf("/tmp/clipport/route-probe-%d.bin", time.Now().UnixNano())
-	cmd := exec.Command("ssh", "-o", "PermitLocalCommand=no", "-o", "BatchMode=yes", "-o", "ConnectTimeout=2", route.SSHTarget, "mkdir -p /tmp/clipport && cat > "+shellQuote(remotePath)+" && rm -f "+shellQuote(remotePath))
+	cmd := exec.Command("ssh", "-o", "PermitLocalCommand=no", "-o", "ClearAllForwardings=yes", "-o", "BatchMode=yes", "-o", "ConnectTimeout=2", route.SSHTarget, "mkdir -p /tmp/clipport && cat > "+shellQuote(remotePath)+" && rm -f "+shellQuote(remotePath))
 	cmd.Stdin = bytes.NewReader(payload)
 	start := time.Now()
 	if err := cmd.Run(); err != nil {

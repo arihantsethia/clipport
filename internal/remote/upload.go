@@ -62,14 +62,31 @@ func (u Uploader) UploadWithRetry(data []byte, localUser string, host config.Hos
 }
 
 func sshCatUpload(data []byte, target, remotePath string) error {
-	dir := path.Dir(remotePath)
-	cmd := exec.Command("ssh", "-o", "PermitLocalCommand=no", target, "mkdir -p "+shellQuote(dir)+" && cat > "+shellQuote(remotePath))
-	cmd.Stdin = bytes.NewReader(data)
+	cmd := sshCatUploadCommand(data, target, remotePath)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("upload to %s failed: %w: %s", target, err, strings.TrimSpace(string(out)))
 	}
 	return nil
+}
+
+func sshCatUploadCommand(data []byte, target, remotePath string) *exec.Cmd {
+	dir := path.Dir(remotePath)
+	cmd := exec.Command(
+		"ssh",
+		"-o", "PermitLocalCommand=no",
+		"-o", "ClearAllForwardings=yes",
+		"-o", "BatchMode=yes",
+		"-o", "ConnectTimeout=3",
+		"-o", "ConnectionAttempts=1",
+		"-o", "ServerAliveInterval=5",
+		"-o", "ServerAliveCountMax=1",
+		"-o", "ControlMaster=no",
+		target,
+		"mkdir -p "+shellQuote(dir)+" && cat > "+shellQuote(remotePath),
+	)
+	cmd.Stdin = bytes.NewReader(data)
+	return cmd
 }
 
 func cleanPathPart(s string) string {

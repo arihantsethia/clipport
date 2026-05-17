@@ -39,15 +39,19 @@ func Run(configPath, socketPath string) []Check {
 		return checks
 	}
 	checks = append(checks, Check{Name: "config", OK: true, Detail: configPath})
+	forwardAddr := installedHTTPAddr()
 	for _, host := range cfg.Hosts {
 		for _, route := range host.SortedRoutes() {
 			name := fmt.Sprintf("ssh %s/%s", host.Name, route.Name)
 			checks = append(checks, Check{Name: name, OK: remote.Probe(route.SSHTarget), Detail: route.SSHTarget})
 			checks = append(checks, checkRemoteTmp(host.Name, route))
+			checks = append(checks, checkRemoteForward(host.Name, route, forwardAddr))
 		}
 	}
 	return checks
 }
+
+var checkForwardHealth = remote.CheckForwardHealth
 
 func checkHTTP() Check {
 	bearer, err := token.Load("")
@@ -154,6 +158,14 @@ func checkRemoteTmp(hostName string, route config.Route) Check {
 		return Check{Name: name, OK: false, Detail: err.Error()}
 	}
 	return Check{Name: name, OK: true, Detail: "/tmp/clipport writable"}
+}
+
+func checkRemoteForward(hostName string, route config.Route, addr string) Check {
+	name := fmt.Sprintf("forward %s/%s", hostName, route.Name)
+	if err := checkForwardHealth(route.SSHTarget, addr); err != nil {
+		return Check{Name: name, OK: false, Detail: fmt.Sprintf("%v; reconnect SSH for this host", err)}
+	}
+	return Check{Name: name, OK: true, Detail: fmt.Sprintf("remote can reach %s", addr)}
 }
 
 func DefaultConfigPath() string {
