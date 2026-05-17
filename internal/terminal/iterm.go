@@ -22,11 +22,11 @@ func (p ItermProvider) ActiveSession() (Session, error) {
 			return exec.Command(name, args...).Output()
 		}
 	}
-	out, err := runner("osascript", "-e", `tell application "iTerm2" to if it is running then tell current session of current window to get name`)
+	out, err := runner("osascript", "-e", `tell application "iTerm2" to if it is running then tell current session of current window to {name, id}`)
 	if err != nil {
 		return Session{}, err
 	}
-	title := strings.TrimSpace(string(bytes.Trim(out, "\x00\r\n\t ")))
+	title, key := parseSessionInfo(string(bytes.Trim(out, "\x00\r\n\t ")))
 	if title == "" {
 		return Session{}, errors.New("active iTerm session has no title")
 	}
@@ -37,11 +37,22 @@ func (p ItermProvider) ActiveSession() (Session, error) {
 	}
 	return Session{
 		Terminal:     "iterm",
-		SessionKey:   title,
+		SessionKey:   key,
 		DetectedHost: host,
 		RawTitle:     title,
 		Kind:         kind,
 	}, nil
+}
+
+func parseSessionInfo(raw string) (string, string) {
+	raw = strings.TrimSpace(raw)
+	title := raw
+	key := raw
+	if idx := strings.LastIndex(raw, ", "); idx >= 0 && strings.TrimSpace(raw[idx+2:]) != "" {
+		title = strings.TrimSpace(raw[:idx])
+		key = strings.TrimSpace(raw[idx+2:])
+	}
+	return title, key
 }
 
 func ExtractHost(title string) string {

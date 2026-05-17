@@ -15,6 +15,7 @@ import (
 
 	"github.com/arihantsethia/clipport/internal/clipboard"
 	"github.com/arihantsethia/clipport/internal/config"
+	"github.com/arihantsethia/clipport/internal/eventlog"
 	"github.com/arihantsethia/clipport/internal/registry"
 	"github.com/arihantsethia/clipport/internal/remote"
 	"github.com/arihantsethia/clipport/internal/terminal"
@@ -37,6 +38,7 @@ type Server struct {
 	Paster    PasteExecutor
 	Routes    *remote.Manager
 	Uploader  remote.Uploader
+	Events    eventlog.Sink
 
 	mu          sync.RWMutex
 	registered  map[string]sessionBinding
@@ -64,6 +66,7 @@ func NewServer(cfg *config.Config) *Server {
 		Clipboard:  clipboard.Provider{},
 		Paster:     AppleScriptPaster{},
 		Routes:     remote.NewManager(nil),
+		Events:     eventlog.FileSink{},
 		registered: map[string]sessionBinding{},
 	}
 	for _, h := range cfg.Hosts {
@@ -145,14 +148,20 @@ func (s *Server) Handle(req Request) Response {
 		if err != nil {
 			return Response{Error: err.Error()}
 		}
-		s.registerSession(session, sessionBinding{
+		binding := sessionBinding{
 			Machine:   machine,
 			SSHAlias:  strings.TrimSpace(req.SSHAlias),
 			SSHHost:   strings.TrimSpace(req.SSHHost),
 			SSHPort:   strings.TrimSpace(req.SSHPort),
 			SSHUser:   strings.TrimSpace(req.SSHUser),
 			CreatedAt: time.Now(),
-		})
+		}
+		s.registerSession(session, binding)
+		if strings.TrimSpace(req.SessionKey) != "" && s.Sessions != nil {
+			if active, activeErr := s.Sessions.ActiveSession(); activeErr == nil && active.SessionKey != "" && active.SessionKey != session.SessionKey {
+				s.registerSession(active, binding)
+			}
+		}
 		return Response{}
 	case "status":
 		return Response{Status: s.Status()}
@@ -168,8 +177,19 @@ func (s *Server) sessionFromRequest(req Request) (terminal.Session, error) {
 	return s.Sessions.ActiveSession()
 }
 
-func (s *Server) Paste(session terminal.Session) (Response, error) {
+func (s *Server) Paste(session terminal.Session) (resp Response, err error) {
 	start := time.Now()
+	event := eventlog.Event{Op: "paste"}
+	defer func() {
+		event.DurationMS = time.Since(start).Milliseconds()
+		event.OK = err == nil
+		event.Path = resp.Path
+		if err != nil {
+			event.Error = "paste_failed"
+			event.Detail = err.Error()
+		}
+		s.recordEvent(event)
+	}()
 	if s.Config == nil {
 		return Response{}, errors.New("server has no config")
 	}
@@ -194,6 +214,7 @@ func (s *Server) Paste(session terminal.Session) (Response, error) {
 			return Response{}, nil
 		}
 	}
+	event.Host = host.Name
 	if s.Clipboard == nil {
 		return Response{}, errors.New("server has no clipboard reader")
 	}
@@ -201,10 +222,14 @@ func (s *Server) Paste(session terminal.Session) (Response, error) {
 	if err != nil {
 		return Response{}, err
 	}
+	event.Kind = string(item.Kind)
+	event.Bytes = len(item.Data)
 	if item.Kind == clipboard.KindText {
 		return Response{Text: string(item.Data)}, nil
 	}
 	route := s.Routes.BestRoute(host)
+	event.Route = route.Name
+	event.Target = route.SSHTarget
 	localUser := "unknown"
 	if u, err := user.Current(); err == nil && u.Username != "" {
 		localUser = filepath.Base(u.Username)
@@ -280,6 +305,13 @@ func (s *Server) recordTransfer(t Transfer) {
 	if len(s.recent) > 10 {
 		s.recent = s.recent[:10]
 	}
+}
+
+func (s *Server) recordEvent(e eventlog.Event) {
+	if s.Events == nil {
+		return
+	}
+	_ = s.Events.Record(e)
 }
 
 func (s *Server) registerSession(session terminal.Session, binding sessionBinding) {

@@ -11,6 +11,7 @@ import (
 
 	"github.com/arihantsethia/clipport/internal/clipboard"
 	"github.com/arihantsethia/clipport/internal/config"
+	"github.com/arihantsethia/clipport/internal/eventlog"
 	"github.com/arihantsethia/clipport/internal/remote"
 	"github.com/arihantsethia/clipport/internal/terminal"
 )
@@ -39,6 +40,15 @@ type fakePaster struct {
 func (f *fakePaster) Paste() error {
 	f.called = true
 	return f.err
+}
+
+type memoryEvents struct {
+	events []eventlog.Event
+}
+
+func (m *memoryEvents) Record(e eventlog.Event) error {
+	m.events = append(m.events, e)
+	return nil
 }
 
 func TestPrepareUnixSocketKeepsLiveSocket(t *testing.T) {
@@ -116,6 +126,64 @@ func TestPasteReturnsRemotePNGPath(t *testing.T) {
 	}
 	if st.Recent[0].Bytes != 3 || st.Recent[0].Route != "public" {
 		t.Fatalf("recent transfer = %+v", st.Recent[0])
+	}
+}
+
+func TestPasteRecordsSuccessEvent(t *testing.T) {
+	events := &memoryEvents{}
+	cfg := &config.Config{Hosts: []config.Host{{
+		Name:       "devbox",
+		MatchHosts: []string{"vm-devbox"},
+		Routes:     []config.Route{{Name: "public", SSHTarget: "devbox-public"}},
+	}}}
+	s := &Server{
+		Config:    cfg,
+		Clipboard: fakeClipboard{item: clipboard.Item{Kind: clipboard.KindPNG, Data: []byte("png")}},
+		Events:    events,
+		Routes:    remote.NewManager(func(target string) bool { return true }),
+		Uploader: remote.Uploader{
+			Now:    func() time.Time { return time.Date(2026, 4, 28, 12, 15, 41, 0, time.UTC) },
+			Runner: func(data []byte, target, remotePath string) error { return nil },
+		},
+		registered: map[string]sessionBinding{},
+	}
+
+	if _, err := s.Paste(terminal.Session{SessionKey: "s1", DetectedHost: "vm-devbox"}); err != nil {
+		t.Fatal(err)
+	}
+	if len(events.events) != 1 {
+		t.Fatalf("events = %d, want 1", len(events.events))
+	}
+	event := events.events[0]
+	if !event.OK || event.Op != "paste" || event.Host != "devbox" || event.Route != "public" || event.Target != "devbox-public" || event.Kind != "png" || event.Bytes != 3 || event.Path == "" {
+		t.Fatalf("event = %+v", event)
+	}
+}
+
+func TestPasteRecordsFailureEvent(t *testing.T) {
+	events := &memoryEvents{}
+	s := &Server{
+		Config: &config.Config{Hosts: []config.Host{{
+			Name:       "devbox",
+			MatchHosts: []string{"vm-devbox"},
+			Routes:     []config.Route{{Name: "public", SSHTarget: "devbox-public"}},
+		}}},
+		Clipboard:  fakeClipboard{err: errors.New("clipboard empty")},
+		Events:     events,
+		Routes:     remote.NewManager(func(target string) bool { return true }),
+		registered: map[string]sessionBinding{},
+	}
+
+	_, err := s.Paste(terminal.Session{SessionKey: "s1", DetectedHost: "vm-devbox"})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if len(events.events) != 1 {
+		t.Fatalf("events = %d, want 1", len(events.events))
+	}
+	event := events.events[0]
+	if event.OK || event.Error == "" || event.Host != "devbox" {
+		t.Fatalf("event = %+v", event)
 	}
 }
 
@@ -404,14 +472,46 @@ func TestRegisterSessionUsesExplicitMachineBinding(t *testing.T) {
 		t.Fatal(err)
 	}
 	st := s.Status()
-	if st.Registered != 1 {
-		t.Fatalf("registered = %d, want 1", st.Registered)
+	if st.Registered != 2 {
+		t.Fatalf("registered = %d, want 2", st.Registered)
 	}
-	if len(st.RecentBindings) != 1 {
-		t.Fatalf("recent bindings = %d, want 1", len(st.RecentBindings))
+	if len(st.RecentBindings) != 2 {
+		t.Fatalf("recent bindings = %d, want 2", len(st.RecentBindings))
 	}
-	if st.RecentBindings[0].Machine != "devbox" || st.RecentBindings[0].SSHAlias != "devbox-public" {
-		t.Fatalf("binding = %+v", st.RecentBindings[0])
+	if st.RecentBindings[1].Machine != "devbox" || st.RecentBindings[1].SSHAlias != "devbox-public" {
+		t.Fatalf("binding = %+v", st.RecentBindings[1])
+	}
+}
+
+func TestRegisterSessionAlsoBindsActiveItermSessionKey(t *testing.T) {
+	cfg := &config.Config{Hosts: []config.Host{{
+		Name:       "devbox",
+		MatchHosts: []string{"vm-devbox"},
+		Routes:     []config.Route{{Name: "public", SSHTarget: "devbox-public"}},
+	}}}
+	s := &Server{
+		Config:    cfg,
+		Sessions:  fakeSessions{terminal.Session{SessionKey: "iterm-stable-id", RawTitle: "tmux", Kind: terminal.SessionLocal}},
+		Clipboard: fakeClipboard{item: clipboard.Item{Kind: clipboard.KindPNG, Data: []byte("png")}},
+		Routes:    remote.NewManager(func(target string) bool { return true }),
+		Uploader: remote.Uploader{
+			Now: func() time.Time { return time.Date(2026, 4, 28, 12, 15, 41, 0, time.UTC) },
+			Runner: func(data []byte, target, remotePath string) error {
+				if target != "devbox-public" {
+					t.Fatalf("target = %q, want devbox-public", target)
+				}
+				return nil
+			},
+		},
+		registered: map[string]sessionBinding{},
+	}
+
+	resp := s.Handle(Request{Command: "register_session", Machine: "devbox", SessionKey: "term-session-id"})
+	if resp.Error != "" {
+		t.Fatalf("register response error = %q", resp.Error)
+	}
+	if _, err := s.Paste(terminal.Session{SessionKey: "iterm-stable-id", RawTitle: "tmux", Kind: terminal.SessionLocal}); err != nil {
+		t.Fatal(err)
 	}
 }
 
