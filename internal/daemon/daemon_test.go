@@ -515,6 +515,132 @@ func TestRegisterSessionAlsoBindsActiveItermSessionKey(t *testing.T) {
 	}
 }
 
+func TestSessionBindingSurvivesDaemonRestart(t *testing.T) {
+	cfg := &config.Config{Hosts: []config.Host{
+		{
+			Name:       "devbox",
+			MatchHosts: []string{"vm-devbox"},
+			Routes:     []config.Route{{Name: "public", SSHTarget: "devbox-public"}},
+		},
+		{
+			Name:       "prod",
+			MatchHosts: []string{"vm-prod"},
+			Routes:     []config.Route{{Name: "public", SSHTarget: "prod-public"}},
+		},
+	}}
+	storePath := filepath.Join(t.TempDir(), "sessions.db")
+	first := &Server{
+		Config:           cfg,
+		Sessions:         fakeSessions{terminal.Session{SessionKey: "iterm-stable-id", RawTitle: "tmux", Kind: terminal.SessionLocal}},
+		sessionStorePath: storePath,
+		registered:       map[string]sessionBinding{},
+	}
+	resp := first.Handle(Request{Command: "register_session", Machine: "devbox", SessionKey: "term-session-id"})
+	if resp.Error != "" {
+		t.Fatalf("register response error = %q", resp.Error)
+	}
+
+	second := &Server{
+		Config:           cfg,
+		Clipboard:        fakeClipboard{item: clipboard.Item{Kind: clipboard.KindPNG, Data: []byte("png")}},
+		Routes:           remote.NewManager(func(target string) bool { return true }),
+		sessionStorePath: storePath,
+		Uploader: remote.Uploader{
+			Now: func() time.Time { return time.Date(2026, 4, 28, 12, 15, 41, 0, time.UTC) },
+			Runner: func(data []byte, target, remotePath string) error {
+				if target != "devbox-public" {
+					t.Fatalf("target = %q, want devbox-public", target)
+				}
+				return nil
+			},
+		},
+		registered: map[string]sessionBinding{},
+	}
+	if err := second.loadSessionBindings(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := second.Paste(terminal.Session{SessionKey: "term-session-id", DetectedHost: "vm-prod"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := second.Paste(terminal.Session{SessionKey: "iterm-stable-id", RawTitle: "tmux", Kind: terminal.SessionLocal}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestRegisterSessionReplacesReusedTerminalSession(t *testing.T) {
+	cfg := &config.Config{Hosts: []config.Host{
+		{Name: "devbox", Routes: []config.Route{{Name: "public", SSHTarget: "devbox-public"}}},
+		{Name: "prod", Routes: []config.Route{{Name: "public", SSHTarget: "prod-public"}}},
+	}}
+	storePath := filepath.Join(t.TempDir(), "sessions.db")
+	s := &Server{
+		Config:           cfg,
+		sessionStorePath: storePath,
+		registered:       map[string]sessionBinding{},
+	}
+	for _, machine := range []string{"devbox", "prod"} {
+		resp := s.Handle(Request{Command: "register_session", Machine: machine, SessionKey: "same-iterm-session"})
+		if resp.Error != "" {
+			t.Fatalf("register %s response error = %q", machine, resp.Error)
+		}
+	}
+	st := s.Status()
+	if st.Registered != 1 {
+		t.Fatalf("registered = %d, want 1", st.Registered)
+	}
+	if len(st.RecentBindings) != 1 || st.RecentBindings[0].Machine != "prod" {
+		t.Fatalf("recent bindings = %+v", st.RecentBindings)
+	}
+
+	reloaded := &Server{Config: cfg, sessionStorePath: storePath, registered: map[string]sessionBinding{}}
+	if err := reloaded.loadSessionBindings(); err != nil {
+		t.Fatal(err)
+	}
+	host, ok := reloaded.resolveSessionHost(terminal.Session{SessionKey: "same-iterm-session"})
+	if !ok || host.Name != "prod" {
+		t.Fatalf("host = %+v ok=%v, want prod", host, ok)
+	}
+}
+
+func TestSessionStorePrunesUnusedBindings(t *testing.T) {
+	cfg := &config.Config{Hosts: []config.Host{
+		{Name: "devbox", Routes: []config.Route{{Name: "public", SSHTarget: "devbox-public"}}},
+		{Name: "prod", Routes: []config.Route{{Name: "public", SSHTarget: "prod-public"}}},
+	}}
+	now := time.Now()
+	storePath := filepath.Join(t.TempDir(), "sessions.db")
+	s := &Server{
+		Config:           cfg,
+		sessionStorePath: storePath,
+		registered: map[string]sessionBinding{
+			"old": {
+				Machine:   "devbox",
+				CreatedAt: now.Add(-45 * 24 * time.Hour),
+				LastUsed:  now.Add(-31 * 24 * time.Hour),
+			},
+			"recent": {
+				Machine:   "prod",
+				CreatedAt: now.Add(-45 * 24 * time.Hour),
+				LastUsed:  now.Add(-2 * time.Hour),
+			},
+		},
+	}
+	if err := s.saveSessionBindings(); err != nil {
+		t.Fatal(err)
+	}
+
+	reloaded := &Server{Config: cfg, sessionStorePath: storePath, registered: map[string]sessionBinding{}}
+	if err := reloaded.loadSessionBindings(); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := reloaded.registered["old"]; ok {
+		t.Fatalf("old binding was not pruned: %+v", reloaded.registered)
+	}
+	if host, ok := reloaded.resolveSessionHost(terminal.Session{SessionKey: "recent"}); !ok || host.Name != "prod" {
+		t.Fatalf("recent host = %+v ok=%v, want prod", host, ok)
+	}
+}
+
 func TestPasteFallsBackToFocusedItermTitleWhenSessionKeyUnbound(t *testing.T) {
 	cfg := &config.Config{Hosts: []config.Host{{
 		Name:       "devbox",

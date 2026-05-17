@@ -28,12 +28,11 @@ type Sink interface {
 }
 
 type FileSink struct {
-	Path      string
-	MaxEvents int
-	Now       func() time.Time
+	Path string
+	Now  func() time.Time
 }
 
-const DefaultMaxEvents = 500
+const defaultMaxEvents = 500
 
 func DefaultPath() string {
 	home, err := os.UserHomeDir()
@@ -66,14 +65,7 @@ func (s FileSink) Record(e Event) error {
 	if err := json.NewEncoder(file).Encode(e); err != nil {
 		return err
 	}
-	return trim(path, s.maxEvents())
-}
-
-func (s FileSink) maxEvents() int {
-	if s.MaxEvents > 0 {
-		return s.MaxEvents
-	}
-	return DefaultMaxEvents
+	return trim(path, defaultMaxEvents)
 }
 
 func trim(path string, max int) error {

@@ -7,6 +7,7 @@ require (
 	github.com/charmbracelet/bubbletea v1.3.10
 	github.com/charmbracelet/lipgloss v1.1.0
 	github.com/getlantern/systray v1.2.2
+	github.com/mattn/go-sqlite3 v1.14.44
 )
 
 require (

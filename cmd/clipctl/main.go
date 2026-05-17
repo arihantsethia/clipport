@@ -964,7 +964,10 @@ func isLaunchctlNotLoaded(err error) bool {
 		return false
 	}
 	text := strings.ToLower(err.Error())
-	return strings.Contains(text, "not loaded") || strings.Contains(text, "could not find service") || strings.Contains(text, "no such process")
+	return strings.Contains(text, "not loaded") ||
+		strings.Contains(text, "could not find service") ||
+		strings.Contains(text, "no such process") ||
+		(strings.Contains(text, "boot-out failed: 5") && strings.Contains(text, "input/output error"))
 }
 
 func isMissingLaunchAgentPlist(err error, path string) bool {

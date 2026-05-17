@@ -342,6 +342,41 @@ func TestRestartInstalledAppCleansStaleProcessesBeforeBootstrap(t *testing.T) {
 	}
 }
 
+func TestRestartInstalledAppIgnoresStaleBootoutError(t *testing.T) {
+	var calls []string
+	err := restartInstalledAppWithLocal(
+		config.LocalConfig{
+			BinDir:              "/tmp/bin",
+			AppLaunchdPlistPath: "/tmp/com.clipport.app.plist",
+			AppPath:             "/tmp/Clipport.app",
+		},
+		func(name string, args ...string) error {
+			calls = append(calls, strings.Join(append([]string{name}, args...), " "))
+			if len(calls) == 1 {
+				return errors.New("exit status 5: Boot-out failed: 5: Input/output error")
+			}
+			return nil
+		},
+		func(paths []string) error {
+			calls = append(calls, "cleanup "+strings.Join(paths, ","))
+			return nil
+		},
+		501,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{
+		"launchctl bootout gui/501 /tmp/com.clipport.app.plist",
+		"cleanup /tmp/Clipport.app/Contents/MacOS/clipport,/tmp/bin/clipport",
+		"launchctl bootstrap gui/501 /tmp/com.clipport.app.plist",
+		"launchctl kickstart -k gui/501/" + uninstall.AppLaunchdLabel,
+	}
+	if strings.Join(calls, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("calls = %q, want %q", calls, want)
+	}
+}
+
 func TestIsInstalledAppCommandRequiresExactExecutablePath(t *testing.T) {
 	wanted := map[string]bool{
 		"/tmp/Clipport.app/Contents/MacOS/clipport":             true,
@@ -443,10 +478,13 @@ func TestInstallerHotSwapsOnlyWhenLaunchAgentWasRunning(t *testing.T) {
 	if !strings.Contains(text, probe) {
 		t.Fatalf("install.sh missing running launch agent probe %q", probe)
 	}
-	probeAt := strings.Index(text, "if app_launch_agent_running; then")
+	probeAt := strings.Index(text, "if app_launch_agent_running || app_process_running; then")
 	restartAt := strings.Index(text, `"$bin_dir/clipctl" restart --config "$config_path"`)
 	if probeAt < 0 || restartAt < 0 {
 		t.Fatalf("install.sh missing running-state restart flow")
+	}
+	if !strings.Contains(text, `pgrep -f "$app_path/Contents/MacOS/clipport"`) {
+		t.Fatalf("install.sh missing running app process probe")
 	}
 	if probeAt > restartAt {
 		t.Fatalf("install.sh must capture running state before restarting")

@@ -42,12 +42,15 @@ func TestFileSinkAppendsJSONLines(t *testing.T) {
 
 func TestFileSinkKeepsRecentEvents(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "events.jsonl")
-	sink := FileSink{Path: path, MaxEvents: 2}
-
-	for _, host := range []string{"old", "middle", "new"} {
-		if err := sink.Record(Event{Op: "paste", Host: host}); err != nil {
-			t.Fatal(err)
-		}
+	if err := os.WriteFile(path, []byte(
+		`{"host":"old"}`+"\n"+
+			`{"host":"middle"}`+"\n"+
+			`{"host":"new"}`+"\n",
+	), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := trim(path, 2); err != nil {
+		t.Fatal(err)
 	}
 	data, err := os.ReadFile(path)
 	if err != nil {

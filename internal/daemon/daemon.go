@@ -40,6 +40,8 @@ type Server struct {
 	Uploader  remote.Uploader
 	Events    eventlog.Sink
 
+	sessionStorePath string
+
 	mu          sync.RWMutex
 	registered  map[string]sessionBinding
 	recent      []Transfer
@@ -53,6 +55,7 @@ type sessionBinding struct {
 	SSHPort   string
 	SSHUser   string
 	CreatedAt time.Time
+	LastUsed  time.Time
 }
 
 func DefaultSocketPath() string {
@@ -61,14 +64,16 @@ func DefaultSocketPath() string {
 
 func NewServer(cfg *config.Config) *Server {
 	s := &Server{
-		Config:     cfg,
-		Sessions:   terminal.ItermProvider{},
-		Clipboard:  clipboard.Provider{},
-		Paster:     AppleScriptPaster{},
-		Routes:     remote.NewManager(nil),
-		Events:     eventlog.FileSink{},
-		registered: map[string]sessionBinding{},
+		Config:           cfg,
+		Sessions:         terminal.ItermProvider{},
+		Clipboard:        clipboard.Provider{},
+		Paster:           AppleScriptPaster{},
+		Routes:           remote.NewManager(nil),
+		Events:           eventlog.FileSink{},
+		sessionStorePath: defaultSessionStorePath(),
+		registered:       map[string]sessionBinding{},
 	}
+	_ = s.loadSessionBindings()
 	for _, h := range cfg.Hosts {
 		s.Routes.WarmHost(h)
 	}
@@ -148,19 +153,24 @@ func (s *Server) Handle(req Request) Response {
 		if err != nil {
 			return Response{Error: err.Error()}
 		}
+		now := time.Now()
 		binding := sessionBinding{
 			Machine:   machine,
 			SSHAlias:  strings.TrimSpace(req.SSHAlias),
 			SSHHost:   strings.TrimSpace(req.SSHHost),
 			SSHPort:   strings.TrimSpace(req.SSHPort),
 			SSHUser:   strings.TrimSpace(req.SSHUser),
-			CreatedAt: time.Now(),
+			CreatedAt: now,
+			LastUsed:  now,
 		}
 		s.registerSession(session, binding)
 		if strings.TrimSpace(req.SessionKey) != "" && s.Sessions != nil {
 			if active, activeErr := s.Sessions.ActiveSession(); activeErr == nil && active.SessionKey != "" && active.SessionKey != session.SessionKey {
 				s.registerSession(active, binding)
 			}
+		}
+		if err := s.saveSessionBindings(); err != nil {
+			return Response{Error: fmt.Sprintf("save session binding: %v", err)}
 		}
 		return Response{}
 	case "status":
@@ -189,6 +199,9 @@ func (s *Server) Paste(session terminal.Session) (resp Response, err error) {
 			event.Detail = err.Error()
 		}
 		s.recordEvent(event)
+		if err == nil {
+			_ = s.saveSessionBindings()
+		}
 	}()
 	if s.Config == nil {
 		return Response{}, errors.New("server has no config")
@@ -262,14 +275,18 @@ func pasteError(err error) Response {
 }
 
 func (s *Server) resolveSessionHost(session terminal.Session) (config.Host, bool) {
-	s.mu.RLock()
+	s.mu.Lock()
 	binding := s.registered[session.SessionKey]
-	s.mu.RUnlock()
 	if binding.Machine != "" {
 		if host, ok := s.Config.ResolveHost(binding.Machine); ok {
+			binding.LastUsed = time.Now()
+			s.registered[session.SessionKey] = binding
+			s.mu.Unlock()
 			return host, true
 		}
+		delete(s.registered, session.SessionKey)
 	}
+	s.mu.Unlock()
 	if strings.TrimSpace(session.DetectedHost) == "" {
 		return config.Host{}, false
 	}
@@ -318,6 +335,7 @@ func (s *Server) registerSession(session terminal.Session, binding sessionBindin
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.registered[session.SessionKey] = binding
+	s.recentBinds = removeSessionBinding(s.recentBinds, session.SessionKey)
 	s.recentBinds = append([]SessionBinding{{
 		SessionKey: session.SessionKey,
 		Machine:    binding.Machine,
@@ -330,6 +348,16 @@ func (s *Server) registerSession(session terminal.Session, binding sessionBindin
 	if len(s.recentBinds) > 10 {
 		s.recentBinds = s.recentBinds[:10]
 	}
+}
+
+func removeSessionBinding(bindings []SessionBinding, sessionKey string) []SessionBinding {
+	filtered := bindings[:0]
+	for _, binding := range bindings {
+		if binding.SessionKey != sessionKey {
+			filtered = append(filtered, binding)
+		}
+	}
+	return filtered
 }
 
 func (s *Server) sessionMatchError(session terminal.Session) error {

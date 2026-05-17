@@ -44,6 +44,11 @@ app_launch_agent_running() {
   launchctl print "gui/$(id -u)/$app_label" >/dev/null 2>&1
 }
 
+app_process_running() {
+  pgrep -f "$app_path/Contents/MacOS/clipport" >/dev/null 2>&1 ||
+    pgrep -f "$bin_dir/clipportd" >/dev/null 2>&1
+}
+
 detect_install_action() {
   if [ -f "$config_path" ] || [ -x "$bin_dir/clipctl" ] || [ -d "$app_path" ] || [ -f "$app_plist_path" ]; then
     install_result="upgraded"
@@ -96,6 +101,7 @@ source_dir() {
 write_menu_app_bundle() {
   mkdir -p "$app_path/Contents/MacOS" "$app_path/Contents/Resources"
   install -m 0755 "$build_dir/clipport" "$app_path/Contents/MacOS/clipport"
+  install -m 0644 "$src/cmd/clipport/assets/app.icns" "$app_path/Contents/Resources/Clipport.icns"
   cat >"$app_path/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -109,6 +115,8 @@ write_menu_app_bundle() {
   <string>Clipport</string>
   <key>CFBundleDisplayName</key>
   <string>Clipport</string>
+  <key>CFBundleIconFile</key>
+  <string>Clipport.icns</string>
   <key>CFBundlePackageType</key>
   <string>APPL</string>
   <key>CFBundleVersion</key>
@@ -122,6 +130,11 @@ write_menu_app_bundle() {
 </dict>
 </plist>
 PLIST
+  touch "$app_path"
+  lsregister="/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
+  if [ -x "$lsregister" ]; then
+    "$lsregister" -f "$app_path" >/dev/null 2>&1 || true
+  fi
 }
 
 write_app_launch_agent() {
@@ -159,7 +172,7 @@ if ! have go; then
 fi
 
 detect_install_action
-if app_launch_agent_running; then
+if app_launch_agent_running || app_process_running; then
   app_was_running=1
 fi
 
