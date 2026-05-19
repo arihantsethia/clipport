@@ -16,10 +16,10 @@ func TestFileSinkAppendsJSONLines(t *testing.T) {
 		Now:  func() time.Time { return time.Date(2026, 5, 17, 9, 10, 11, 0, time.UTC) },
 	}
 
-	if err := sink.Record(Event{Op: "paste", Host: "zyra", Route: "public", OK: true, Bytes: 12}); err != nil {
+	if err := sink.Record(Event{Op: "paste", Host: "devbox", Route: "public", OK: true, Bytes: 12}); err != nil {
 		t.Fatal(err)
 	}
-	if err := sink.Record(Event{Op: "paste", Host: "zyra", Route: "public", OK: false, Error: "upload_failed"}); err != nil {
+	if err := sink.Record(Event{Op: "paste", Host: "devbox", Route: "public", OK: false, Error: "upload_failed"}); err != nil {
 		t.Fatal(err)
 	}
 

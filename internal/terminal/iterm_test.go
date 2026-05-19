@@ -3,7 +3,7 @@ package terminal
 import "testing"
 
 func TestExtractHostFromItermTitle(t *testing.T) {
-	title := "dev@vm-devbox: ~ (cloudflared) — CSS-MGGWV0XYQX.local"
+	title := "dev@vm-devbox: ~ (cloudflared) — DEV-MAC.local"
 	if got := ExtractHost(title); got != "vm-devbox" {
 		t.Fatalf("ExtractHost() = %q, want vm-devbox", got)
 	}

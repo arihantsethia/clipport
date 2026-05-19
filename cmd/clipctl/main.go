@@ -21,6 +21,7 @@ import (
 	"github.com/arihantsethia/clipport/internal/shims"
 	"github.com/arihantsethia/clipport/internal/shimsetup"
 	"github.com/arihantsethia/clipport/internal/sshsetup"
+	"github.com/arihantsethia/clipport/internal/terminal"
 	"github.com/arihantsethia/clipport/internal/testpaste"
 	"github.com/arihantsethia/clipport/internal/token"
 	"github.com/arihantsethia/clipport/internal/uninstall"
@@ -41,7 +42,13 @@ func main() {
 	case "help":
 		usage()
 	case "paste":
-		resp, err := daemon.Send(*socketPath, daemon.Request{Command: "paste", SessionKey: sessionKeyFromEnv()})
+		sessionKey := sessionKeyFromEnv()
+		resp, err := daemon.Send(*socketPath, daemon.Request{Command: "paste", SessionKey: sessionKey})
+		if err != nil && isUnmappedSessionFailure(resp) {
+			if repaired, _ := repairUnmappedSession(*socketPath, sessionKey, config.LoadDefault, terminal.ItermProvider{}.ActiveSession, confirmRepairMachine); repaired {
+				resp, err = daemon.Send(*socketPath, daemon.Request{Command: "paste", SessionKey: sessionKey})
+			}
+		}
 		if err != nil {
 			fmt.Fprintln(os.Stderr, pasteErrorMessage(resp, err, *debug))
 			os.Exit(1)
@@ -387,6 +394,100 @@ func pasteOutput(resp daemon.Response) string {
 		return resp.Text
 	}
 	return resp.Path
+}
+
+func isUnmappedSessionFailure(resp daemon.Response) bool {
+	return strings.Contains(resp.Debug, "failed to match active iTerm session")
+}
+
+func repairUnmappedSession(socketPath string, sessionKey string, loadConfig func() (*config.Config, error), activeSession func() (terminal.Session, error), confirm func([]config.Host) (string, bool, error)) (bool, error) {
+	cfg, err := loadConfig()
+	if err != nil {
+		return false, err
+	}
+	session, _ := activeSession()
+	if strings.TrimSpace(sessionKey) == "" {
+		sessionKey = session.SessionKey
+	}
+	if strings.TrimSpace(sessionKey) == "" {
+		return false, nil
+	}
+	machine, ok, err := repairMachineForDetectedHost(session.DetectedHost, cfg, confirm)
+	if err != nil || !ok {
+		return false, err
+	}
+	_, err = daemon.Send(socketPath, daemon.Request{
+		Command:    "register_session",
+		Machine:    machine,
+		SessionKey: sessionKey,
+	})
+	return err == nil, err
+}
+
+func repairMachineForDetectedHost(detectedHost string, cfg *config.Config, confirm func([]config.Host) (string, bool, error)) (string, bool, error) {
+	if cfg == nil || len(cfg.Hosts) == 0 {
+		return "", false, nil
+	}
+	if host, ok := explicitHostForDetectedSession(detectedHost, cfg.Hosts); ok {
+		return host.Name, true, nil
+	}
+	return confirm(cfg.Hosts)
+}
+
+func explicitHostForDetectedSession(detected string, hosts []config.Host) (config.Host, bool) {
+	detected = strings.TrimSpace(detected)
+	if detected == "" {
+		return config.Host{}, false
+	}
+	for _, host := range hosts {
+		if host.Name == detected {
+			return host, true
+		}
+		for _, alias := range host.MatchHosts {
+			if alias == detected {
+				return host, true
+			}
+		}
+	}
+	return config.Host{}, false
+}
+
+func confirmRepairMachine(hosts []config.Host) (string, bool, error) {
+	if len(hosts) == 1 {
+		msg := fmt.Sprintf("Connect this iTerm session to %s for Clipport paste?", hosts[0].Name)
+		_, err := exec.Command("osascript", "-e", fmt.Sprintf(
+			`display dialog %s buttons {"Cancel", "Connect"} default button "Connect" cancel button "Cancel" with title "Clipport"`,
+			appleScriptString(msg),
+		)).CombinedOutput()
+		if err != nil {
+			return "", false, nil
+		}
+		return hosts[0].Name, true, nil
+	}
+
+	items := make([]string, 0, len(hosts))
+	for _, host := range hosts {
+		items = append(items, appleScriptString(host.Name))
+	}
+	out, err := exec.Command("osascript", "-e", fmt.Sprintf(
+		`choose from list {%s} with title "Clipport" with prompt %s`,
+		strings.Join(items, ", "),
+		appleScriptString("Connect this iTerm session to a Clipport host:"),
+	)).CombinedOutput()
+	if err != nil {
+		return "", false, nil
+	}
+	machine := strings.TrimSpace(string(out))
+	if machine == "" || machine == "false" {
+		return "", false, nil
+	}
+	return machine, true, nil
+}
+
+func appleScriptString(s string) string {
+	s = strings.ReplaceAll(s, `\`, `\\`)
+	s = strings.ReplaceAll(s, `"`, `\"`)
+	return `"` + s + `"`
 }
 
 func registerSession(socketPath string, args []string, machineFlag string) {

@@ -63,6 +63,74 @@ func TestPasteOutputReturnsTextBeforePath(t *testing.T) {
 	}
 }
 
+func TestIsUnmappedSessionFailureDetectsMappingFailure(t *testing.T) {
+	resp := daemon.Response{Debug: `failed to match active iTerm session (title "tmux"; detected host unavailable)`}
+	if !isUnmappedSessionFailure(resp) {
+		t.Fatal("expected mapping failure")
+	}
+}
+
+func TestRepairMachineForSessionUsesDetectedHostWithoutPrompt(t *testing.T) {
+	cfg := &config.Config{Hosts: []config.Host{{Name: "devbox", MatchHosts: []string{"devbox.local"}}}}
+	called := false
+	machine, ok, err := repairMachineForDetectedHost(
+		"devbox.local",
+		cfg,
+		func([]config.Host) (string, bool, error) {
+			called = true
+			return "", false, nil
+		},
+	)
+	if err != nil || !ok || machine != "devbox" {
+		t.Fatalf("machine=%q ok=%v err=%v", machine, ok, err)
+	}
+	if called {
+		t.Fatal("did not expect prompt for detected host")
+	}
+}
+
+func TestRepairMachineForSessionPromptsWhenHostIsUnavailable(t *testing.T) {
+	cfg := &config.Config{
+		DefaultHost: "devbox",
+		Hosts:       []config.Host{{Name: "devbox"}},
+	}
+	machine, ok, err := repairMachineForDetectedHost(
+		"",
+		cfg,
+		func(hosts []config.Host) (string, bool, error) {
+			if len(hosts) != 1 || hosts[0].Name != "devbox" {
+				t.Fatalf("hosts=%+v", hosts)
+			}
+			return "devbox", true, nil
+		},
+	)
+	if err != nil || !ok || machine != "devbox" {
+		t.Fatalf("machine=%q ok=%v err=%v", machine, ok, err)
+	}
+}
+
+func TestRepairMachineForSessionDoesNotUseDefaultHostForUnknownDetectedHost(t *testing.T) {
+	cfg := &config.Config{
+		DefaultHost: "devbox",
+		Hosts:       []config.Host{{Name: "devbox"}},
+	}
+	prompted := false
+	machine, ok, err := repairMachineForDetectedHost(
+		"unknown",
+		cfg,
+		func([]config.Host) (string, bool, error) {
+			prompted = true
+			return "devbox", true, nil
+		},
+	)
+	if err != nil || !ok || machine != "devbox" {
+		t.Fatalf("machine=%q ok=%v err=%v", machine, ok, err)
+	}
+	if !prompted {
+		t.Fatal("expected prompt for unknown detected host")
+	}
+}
+
 func TestMaybeRestartInstalledAppRestartsRunningLaunchAgent(t *testing.T) {
 	var calls []string
 	err := maybeStartOrRestartInstalledApp(

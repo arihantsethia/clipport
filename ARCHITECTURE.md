@@ -369,7 +369,7 @@ even if upload succeeds.
 
 Project: Clipport
 
-Repository: `git@github-personal:arihantsethia/clipport.git`
+Repository: `https://github.com/arihantsethia/clipport`
 
 Platform: macOS, iTerm2, OpenSSH
 
