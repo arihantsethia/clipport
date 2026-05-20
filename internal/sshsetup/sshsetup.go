@@ -63,7 +63,7 @@ func InstallForward(configPath, host string, remotePort int) (string, error) {
 
 func renderForwardBlock(host string, remotePort int) string {
 	return fmt.Sprintf(
-		"# clipport begin %s\nHost %s\n    ControlMaster no\n    ExitOnForwardFailure yes\n    ServerAliveInterval 15\n    ServerAliveCountMax 2\n    RemoteForward 127.0.0.1:%d 127.0.0.1:%d\n# clipport end %s\n",
+		"# clipport begin %s\nHost %s\n    ControlMaster no\n    ExitOnForwardFailure no\n    ServerAliveInterval 15\n    ServerAliveCountMax 2\n    RemoteForward 127.0.0.1:%d 127.0.0.1:%d\n# clipport end %s\n",
 		host,
 		host,
 		remotePort,

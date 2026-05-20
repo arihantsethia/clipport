@@ -79,7 +79,7 @@ func TestInstallForwardDoesNotTreatPrefixAliasAsInstalled(t *testing.T) {
 	}
 }
 
-func TestInstallForwardWritesHardenedForwardBlock(t *testing.T) {
+func TestInstallForwardWritesManagedForwardBlock(t *testing.T) {
 	dir := t.TempDir()
 	configPath := filepath.Join(dir, "config")
 	if err := os.WriteFile(configPath, []byte("Host existing\n    HostName example.com\n"), 0o600); err != nil {
@@ -97,7 +97,7 @@ func TestInstallForwardWritesHardenedForwardBlock(t *testing.T) {
 	for _, want := range []string{
 		"Host dev",
 		"    ControlMaster no",
-		"    ExitOnForwardFailure yes",
+		"    ExitOnForwardFailure no",
 		"    ServerAliveInterval 15",
 		"    ServerAliveCountMax 2",
 		"    RemoteForward 127.0.0.1:18765 127.0.0.1:18765",
@@ -159,7 +159,7 @@ func TestInstallForwardUpgradesExistingManagedBlock(t *testing.T) {
 	}
 	for _, want := range []string{
 		"    ControlMaster no",
-		"    ExitOnForwardFailure yes",
+		"    ExitOnForwardFailure no",
 		"    ServerAliveInterval 15",
 		"    ServerAliveCountMax 2",
 	} {
