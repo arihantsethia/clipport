@@ -57,7 +57,6 @@ Clipport is useful when the remote shell needs local clipboard state:
 
 ```bash
 brew install arihantsethia/tap/clipport
-clipport-setup
 clipctl onboard
 clipctl start
 clipctl doctor
@@ -70,12 +69,11 @@ the Clipport paste shortcut.
 
 ```bash
 brew install arihantsethia/tap/clipport
-clipport-setup
 ```
 
 Homebrew installs `clipctl`, `clipportd`, and the Clipport menu bar app.
-`clipport-setup` records local install paths in
-`~/.config/clipport/config.toml`. It does not start Clipport.
+`clipctl onboard` records the local app paths in
+`~/.config/clipport/config.toml` before configuring SSH routes.
 
 Manual install without Homebrew tap:
 

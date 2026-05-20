@@ -660,6 +660,99 @@ func TestRecordInstallSettingsAcceptsIPv6LoopbackHTTP(t *testing.T) {
 	}
 }
 
+func TestRecordHomebrewInstallCreatesUserAppAndPreservesHTTP(t *testing.T) {
+	root := t.TempDir()
+	home := filepath.Join(root, "home")
+	prefix := filepath.Join(root, "opt", "clipport")
+	configPath := filepath.Join(home, ".config", "clipport", "config.toml")
+	createHomebrewInstallForTest(t, prefix)
+	if err := os.MkdirAll(filepath.Dir(configPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(configPath, []byte("[local]\nhttp_addr = \"127.0.0.1:19999\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := recordHomebrewInstall(configPath, "/tmp/ssh_config", prefix, home); err != nil {
+		t.Fatal(err)
+	}
+
+	appLink := filepath.Join(home, "Applications", "Clipport.app")
+	target, err := os.Readlink(appLink)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if target != filepath.Join(prefix, "libexec", "Clipport.app") {
+		t.Fatalf("app link = %q", target)
+	}
+	cfg, err := config.Load(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Local.BinDir != filepath.Join(prefix, "bin") {
+		t.Fatalf("BinDir = %q", cfg.Local.BinDir)
+	}
+	if cfg.Local.AppLaunchdPlistPath != filepath.Join(prefix, "libexec", uninstall.AppLaunchdLabel+".plist") {
+		t.Fatalf("AppLaunchdPlistPath = %q", cfg.Local.AppLaunchdPlistPath)
+	}
+	if cfg.Local.AppPath != appLink {
+		t.Fatalf("AppPath = %q", cfg.Local.AppPath)
+	}
+	if cfg.Local.HTTPAddr != "127.0.0.1:19999" {
+		t.Fatalf("HTTPAddr = %q", cfg.Local.HTTPAddr)
+	}
+	if cfg.Local.SSHConfigPath != "/tmp/ssh_config" {
+		t.Fatalf("SSHConfigPath = %q", cfg.Local.SSHConfigPath)
+	}
+	if cfg.Local.Iterm.Key != "0x76-0x120000" {
+		t.Fatalf("Iterm.Key = %q", cfg.Local.Iterm.Key)
+	}
+}
+
+func TestEnsureUserAppLinkRejectsNonClipportApp(t *testing.T) {
+	root := t.TempDir()
+	home := filepath.Join(root, "home")
+	prefix := filepath.Join(root, "opt", "clipport")
+	createHomebrewInstallForTest(t, prefix)
+	appLink := filepath.Join(home, "Applications", "Clipport.app")
+	if err := os.MkdirAll(filepath.Join(appLink, "Contents"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(appLink, "Contents", "Info.plist"), []byte("<string>com.example.other</string>"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	err := recordHomebrewInstall(filepath.Join(home, ".config", "clipport", "config.toml"), "", prefix, home)
+	if err == nil || !strings.Contains(err.Error(), "already exists and is not Clipport") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestHomebrewPrefixForExecutableDetectsOptInstall(t *testing.T) {
+	root := t.TempDir()
+	prefix := filepath.Join(root, "opt", "clipport")
+	createHomebrewInstallForTest(t, prefix)
+	exe := filepath.Join(root, "Cellar", "clipport", "0.1.0", "bin", "clipctl")
+	if err := os.MkdirAll(filepath.Dir(exe), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(exe, []byte("clipctl"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(filepath.Join(prefix, "bin", "clipctl")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(exe, filepath.Join(prefix, "bin", "clipctl")); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOMEBREW_PREFIX", root)
+
+	got, ok := homebrewPrefixForExecutable(exe)
+	if !ok || got != prefix {
+		t.Fatalf("prefix=%q ok=%v", got, ok)
+	}
+}
+
 func TestBuildUpdateInvocationCurlsCanonicalInstaller(t *testing.T) {
 	name, args, env := buildUpdateInvocation("/tmp/config.toml", config.LocalConfig{
 		BinDir:   "/tmp/bin",
@@ -730,6 +823,27 @@ func envContains(env []string, want string) bool {
 		}
 	}
 	return false
+}
+
+func createHomebrewInstallForTest(t *testing.T, prefix string) {
+	t.Helper()
+	for _, dir := range []string{
+		filepath.Join(prefix, "bin"),
+		filepath.Join(prefix, "libexec", "Clipport.app", "Contents", "MacOS"),
+	} {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, path := range []string{
+		filepath.Join(prefix, "bin", "clipctl"),
+		filepath.Join(prefix, "libexec", "Clipport.app", "Contents", "MacOS", "clipport"),
+		filepath.Join(prefix, "libexec", uninstall.AppLaunchdLabel+".plist"),
+	} {
+		if err := os.WriteFile(path, []byte("x"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
 }
 
 func assertCommandUsage(t *testing.T, output string) {

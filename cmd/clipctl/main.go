@@ -252,6 +252,10 @@ func main() {
 			}
 			return
 		}
+		if err := prepareHomebrewInstallForOnboard(*output, *sshConfig); err != nil {
+			fmt.Fprintf(os.Stderr, "clipctl: %v\n", err)
+			os.Exit(1)
+		}
 		result, err := onboard.RunTUI(hosts)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "clipctl: %v\n", err)
@@ -724,6 +728,167 @@ func recordInstallSettings(configPath, binDir, sshConfigPath, appLaunchdPlistPat
 		cfg.Local.Iterm.Key = itermKey
 	}
 	return cfg.Save(configPath)
+}
+
+func prepareHomebrewInstallForOnboard(configPath, sshConfigPath string) error {
+	exe, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	prefix, ok := homebrewPrefixForExecutable(exe)
+	if !ok {
+		return nil
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return err
+	}
+	return recordHomebrewInstall(configPath, sshConfigPath, prefix, home)
+}
+
+func recordHomebrewInstall(configPath, sshConfigPath, prefix, home string) error {
+	appLink, err := ensureUserAppLink(prefix, home)
+	if err != nil {
+		return err
+	}
+	httpAddr, err := missingHTTPAddr(configPath)
+	if err != nil {
+		return err
+	}
+	return recordInstallSettings(
+		configPath,
+		filepath.Join(prefix, "bin"),
+		sshConfigPath,
+		filepath.Join(prefix, "libexec", uninstall.AppLaunchdLabel+".plist"),
+		appLink,
+		httpAddr,
+		"0x76-0x120000",
+	)
+}
+
+func homebrewPrefixForExecutable(exe string) (string, bool) {
+	resolvedExe, err := filepath.EvalSymlinks(exe)
+	if err != nil {
+		resolvedExe = exe
+	}
+	for _, prefix := range homebrewPrefixCandidates() {
+		if !homebrewClipportFilesExist(prefix) {
+			continue
+		}
+		clipctlPath := filepath.Join(prefix, "bin", "clipctl")
+		resolvedClipctl, err := filepath.EvalSymlinks(clipctlPath)
+		if err != nil {
+			resolvedClipctl = clipctlPath
+		}
+		if resolvedExe == resolvedClipctl || exe == clipctlPath {
+			return prefix, true
+		}
+	}
+	return "", false
+}
+
+func homebrewPrefixCandidates() []string {
+	seen := map[string]bool{}
+	var prefixes []string
+	for _, prefix := range []string{
+		filepath.Join(os.Getenv("HOMEBREW_PREFIX"), "opt", "clipport"),
+		"/opt/homebrew/opt/clipport",
+		"/usr/local/opt/clipport",
+	} {
+		if prefix == "opt/clipport" || seen[prefix] {
+			continue
+		}
+		seen[prefix] = true
+		prefixes = append(prefixes, prefix)
+	}
+	return prefixes
+}
+
+func homebrewClipportFilesExist(prefix string) bool {
+	for _, path := range []string{
+		filepath.Join(prefix, "bin", "clipctl"),
+		filepath.Join(prefix, "libexec", "Clipport.app", "Contents", "MacOS", "clipport"),
+		filepath.Join(prefix, "libexec", uninstall.AppLaunchdLabel+".plist"),
+	} {
+		if _, err := os.Stat(path); err != nil {
+			return false
+		}
+	}
+	return true
+}
+
+func ensureUserAppLink(prefix, home string) (string, error) {
+	appTarget := filepath.Join(prefix, "libexec", "Clipport.app")
+	appLink := filepath.Join(home, "Applications", "Clipport.app")
+	if _, err := os.Stat(appTarget); err != nil {
+		return "", err
+	}
+	if err := os.MkdirAll(filepath.Dir(appLink), 0o700); err != nil {
+		return "", err
+	}
+	info, err := os.Lstat(appLink)
+	if err == nil {
+		if info.Mode()&os.ModeSymlink != 0 {
+			if err := os.Remove(appLink); err != nil {
+				return "", err
+			}
+		} else if existingBundleID(appLink) == "com.clipport.app" {
+			if err := os.RemoveAll(appLink); err != nil {
+				return "", err
+			}
+		} else {
+			return "", fmt.Errorf("%s already exists and is not Clipport", appLink)
+		}
+	} else if !os.IsNotExist(err) {
+		return "", err
+	}
+	if err := os.Symlink(appTarget, appLink); err != nil {
+		return "", err
+	}
+	registerAppWithLaunchServices(appLink)
+	return appLink, nil
+}
+
+func existingBundleID(appPath string) string {
+	data, err := os.ReadFile(filepath.Join(appPath, "Contents", "Info.plist"))
+	if err != nil {
+		return ""
+	}
+	if strings.Contains(string(data), "<string>com.clipport.app</string>") {
+		return "com.clipport.app"
+	}
+	return ""
+}
+
+func registerAppWithLaunchServices(appPath string) {
+	lsregister := "/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
+	if _, err := os.Stat(lsregister); err != nil {
+		return
+	}
+	_ = exec.Command(lsregister, "-f", appPath).Run()
+}
+
+func missingHTTPAddr(configPath string) (string, error) {
+	local, err := config.LoadLocalBestEffort(configPath)
+	if err != nil {
+		return "", err
+	}
+	if local.HTTPAddr != "" {
+		return "", nil
+	}
+	return freeLoopbackHTTPAddr(18765, 18865)
+}
+
+func freeLoopbackHTTPAddr(start, end int) (string, error) {
+	for port := start; port <= end; port++ {
+		addr := fmt.Sprintf("127.0.0.1:%d", port)
+		listener, err := net.Listen("tcp", addr)
+		if err == nil {
+			_ = listener.Close()
+			return addr, nil
+		}
+	}
+	return "", fmt.Errorf("no free loopback HTTP port found in %d-%d", start, end)
 }
 
 func isLoopbackHTTPAddr(addr string) bool {
