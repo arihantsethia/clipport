@@ -14,6 +14,9 @@ Clipport makes one iTerm paste shortcut work across local and SSH shells. It
 detects the active iTerm session, reads the Mac clipboard, and chooses the
 right paste behavior.
 
+If your Mac clipboard has text, the remote shell receives text. If it has an
+image or screenshot, Clipport uploads the image and inserts the remote path.
+
 | Session | Clipboard | Terminal receives |
 |---|---|---|
 | local | text or image | native paste; `clipctl paste` prints nothing |
@@ -49,6 +52,18 @@ Clipport is useful when the remote shell needs local clipboard state:
 - Homebrew
 - passwordless SSH to each remote machine
 - writable `/tmp` on each remote machine
+
+## Quick Start
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/arihantsethia/clipport/main/install.sh | sh
+clipctl onboard
+clipctl start
+clipctl doctor
+```
+
+Then open an SSH session in iTerm, copy text or an image on your Mac, and press
+the Clipport paste shortcut.
 
 ## Install
 
