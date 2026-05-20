@@ -14,6 +14,9 @@ Clipport makes one iTerm paste shortcut work across local and SSH shells. It
 detects the active iTerm session, reads the Mac clipboard, and chooses the
 right paste behavior.
 
+If your Mac clipboard has text, the remote shell receives text. If it has an
+image or screenshot, Clipport uploads the image and inserts the remote path.
+
 | Session | Clipboard | Terminal receives |
 |---|---|---|
 | local | text or image | native paste; `clipctl paste` prints nothing |
@@ -50,19 +53,35 @@ Clipport is useful when the remote shell needs local clipboard state:
 - passwordless SSH to each remote machine
 - writable `/tmp` on each remote machine
 
+## Quick Start
+
+```bash
+brew install arihantsethia/tap/clipport
+clipport-setup
+clipctl onboard
+clipctl start
+clipctl doctor
+```
+
+Then open an SSH session in iTerm, copy text or an image on your Mac, and press
+the Clipport paste shortcut.
+
 ## Install
+
+```bash
+brew install arihantsethia/tap/clipport
+clipport-setup
+```
+
+Homebrew installs `clipctl`, `clipportd`, and the Clipport menu bar app.
+`clipport-setup` records local install paths in
+`~/.config/clipport/config.toml`. It does not start Clipport.
+
+Manual install without Homebrew tap:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/arihantsethia/clipport/main/install.sh | sh
 ```
-
-The installer builds `clipctl`, `clipportd`, and the Clipport menu bar app.
-It records local install paths in `~/.config/clipport/config.toml`. It does
-not start Clipport. It reports `installed` for a new install and `upgraded`
-when it finds an existing config, binary, app bundle, or launchd plist.
-
-If `~/.local/bin` is not on your `PATH`, the installer prints the export line
-to add.
 
 ## Setup
 
