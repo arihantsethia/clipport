@@ -1,7 +1,11 @@
 <div align="center">
-  <img src="assets/brand/icon.svg" width="96" height="96" alt="clipport icon">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/brand/icon.svg">
+    <source media="(prefers-color-scheme: light)" srcset="assets/brand/dark_icon.png">
+    <img src="assets/brand/icon.svg" width="96" height="96" alt="clipport icon">
+  </picture>
   <h1>clipport</h1>
-  <p><strong>Paste local text and images into remote iTerm sessions.</strong></p>
+  <p><strong>Paste Mac clipboard text, images, and screenshots into remote iTerm SSH sessions.</strong></p>
   <p>
     <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-blue.svg"></a>
     <img alt="Go 1.26.2" src="https://img.shields.io/badge/go-1.26.2-00ADD8.svg">
@@ -10,24 +14,25 @@
   </p>
 </div>
 
-Clipport makes one iTerm paste shortcut work across local and SSH shells. It
-detects the active iTerm session, reads the Mac clipboard, and chooses the
-right paste behavior.
+Clipport lets you share images and screenshots over SSH without saving files by
+hand or running one-off `scp` commands. One iTerm paste shortcut works across
+local and remote shells: Clipport detects the active session, reads the Mac
+clipboard, and chooses the right paste behavior.
 
 If your Mac clipboard has text, the remote shell receives text. If it has an
-image or screenshot, Clipport uploads the image and inserts the remote path.
+image or screenshot, Clipport uploads it over SSH and inserts the remote path.
 
 | Session | Clipboard | Terminal receives |
 |---|---|---|
-| local | text or image | native paste; `clipctl paste` prints nothing |
+| local | text, image, or screenshot | native paste; `clipctl paste` prints nothing |
 | remote | text | clipboard text |
-| remote | image | remote image path under `/tmp/clipport/...` |
+| remote | screenshot or image | remote file path under `/tmp/clipport/...` |
 
 ## Demo
 
 ![Clipport demo](assets/demo.gif)
 
-Remote image example:
+Remote image or screenshot example:
 
 ```text
 /tmp/clipport/yourname/clipboard-20260428-132708.241851.png
@@ -42,7 +47,7 @@ Clipport is useful when the remote shell needs local clipboard state:
 
 - paste a screenshot path into a VM shell
 - hand a local image to a remote command
-- avoid one-off `scp` for clipboard images
+- avoid one-off `scp` for screenshots and clipboard images
 - keep one paste shortcut for local and SSH shells
 
 ## Requirements
@@ -62,8 +67,8 @@ clipctl start
 clipctl doctor
 ```
 
-Then open an SSH session in iTerm, copy text or an image on your Mac, and press
-the Clipport paste shortcut.
+Then open an SSH session in iTerm, copy text, an image, or a screenshot on your
+Mac, and press the Clipport paste shortcut.
 
 ## Install
 
@@ -107,8 +112,8 @@ clipctl doctor
 Then open an SSH session in iTerm, copy text on your Mac, and press the
 Clipport paste shortcut. Text should appear at the remote prompt.
 
-For images, copy an image or screenshot and press the same shortcut. The remote
-prompt receives a path like:
+For images and screenshots, copy the clipboard item and press the same shortcut.
+The remote prompt receives a path like:
 
 ```text
 /tmp/clipport/yourname/clipboard-20260428-132708.241851.png
