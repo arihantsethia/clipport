@@ -9,6 +9,7 @@ import (
 )
 
 var userHostRE = regexp.MustCompile(`([A-Za-z0-9._%+-]+)@([A-Za-z0-9._-]+)`)
+var itermSessionKeyRE = regexp.MustCompile(`^w[0-9]+t[0-9]+p[0-9]+:([0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12})$`)
 var localShellTitleRE = regexp.MustCompile(`^-?(zsh|bash|fish|sh|tmux)$`)
 
 type ItermProvider struct {
@@ -42,6 +43,15 @@ func (p ItermProvider) ActiveSession() (Session, error) {
 		RawTitle:     title,
 		Kind:         kind,
 	}, nil
+}
+
+// ItermSessionID returns the stable ID used by AppleScript for an iTerm
+// TERM_SESSION_ID (w<window>t<tab>p<pane>:<UUID>). Unknown formats have no alias.
+func ItermSessionID(key string) string {
+	if match := itermSessionKeyRE.FindStringSubmatch(strings.TrimSpace(key)); match != nil {
+		return match[1]
+	}
+	return ""
 }
 
 func parseSessionInfo(raw string) (string, string) {

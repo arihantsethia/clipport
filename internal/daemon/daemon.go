@@ -164,10 +164,10 @@ func (s *Server) Handle(req Request) Response {
 			LastUsed:  now,
 		}
 		s.registerSession(session, binding)
-		if strings.TrimSpace(req.SessionKey) != "" && s.Sessions != nil {
-			if active, activeErr := s.Sessions.ActiveSession(); activeErr == nil && active.SessionKey != "" && active.SessionKey != session.SessionKey {
-				s.registerSession(active, binding)
-			}
+		// Derive the AppleScript ID from the registering session, never from
+		// whichever tab happens to be focused when the SSH hook completes.
+		if key := terminal.ItermSessionID(session.SessionKey); key != "" {
+			s.registerSession(terminal.Session{SessionKey: key}, binding)
 		}
 		if err := s.saveSessionBindings(); err != nil {
 			return Response{Error: fmt.Sprintf("save session binding: %v", err)}

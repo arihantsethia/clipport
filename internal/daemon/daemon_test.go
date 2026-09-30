@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"errors"
+	"fmt"
 	"net"
 	"os"
 	"path/filepath"
@@ -19,6 +20,17 @@ import (
 type fakeSessions struct{ session terminal.Session }
 
 func (f fakeSessions) ActiveSession() (terminal.Session, error) { return f.session, nil }
+
+type sessionProviderFunc func() (terminal.Session, error)
+
+func (f sessionProviderFunc) ActiveSession() (terminal.Session, error) { return f() }
+
+func fakeRoutes(probe remote.ProbeFunc) *remote.Manager {
+	routes := remote.NewManager(probe)
+	// Mock both probes: mocking reachability alone still runs a real SSH upload.
+	routes.Tester = func(config.Route) (time.Duration, bool) { return 0, false }
+	return routes
+}
 
 type fakeClipboard struct {
 	item clipboard.Item
@@ -101,7 +113,7 @@ func TestPasteReturnsRemotePNGPath(t *testing.T) {
 		Config:    cfg,
 		Sessions:  fakeSessions{terminal.Session{SessionKey: "s1", DetectedHost: "vm-devbox"}},
 		Clipboard: fakeClipboard{item: clipboard.Item{Kind: clipboard.KindPNG, Data: []byte("png")}},
-		Routes:    remote.NewManager(func(target string) bool { return true }),
+		Routes:    fakeRoutes(func(target string) bool { return true }),
 		Uploader: remote.Uploader{
 			Now: func() time.Time { return time.Date(2026, 4, 28, 12, 15, 41, 0, time.UTC) },
 			Runner: func(data []byte, target, remotePath string) error {
@@ -140,7 +152,7 @@ func TestPasteRecordsSuccessEvent(t *testing.T) {
 		Config:    cfg,
 		Clipboard: fakeClipboard{item: clipboard.Item{Kind: clipboard.KindPNG, Data: []byte("png")}},
 		Events:    events,
-		Routes:    remote.NewManager(func(target string) bool { return true }),
+		Routes:    fakeRoutes(func(target string) bool { return true }),
 		Uploader: remote.Uploader{
 			Now:    func() time.Time { return time.Date(2026, 4, 28, 12, 15, 41, 0, time.UTC) },
 			Runner: func(data []byte, target, remotePath string) error { return nil },
@@ -170,7 +182,7 @@ func TestPasteRecordsFailureEvent(t *testing.T) {
 		}}},
 		Clipboard:  fakeClipboard{err: errors.New("clipboard empty")},
 		Events:     events,
-		Routes:     remote.NewManager(func(target string) bool { return true }),
+		Routes:     fakeRoutes(func(target string) bool { return true }),
 		registered: map[string]sessionBinding{},
 	}
 
@@ -198,7 +210,7 @@ func TestStatusIncludesPreferredHostRouteTarget(t *testing.T) {
 	probed := false
 	s := &Server{
 		Config: cfg,
-		Routes: remote.NewManager(func(target string) bool {
+		Routes: fakeRoutes(func(target string) bool {
 			probed = true
 			return target == "192.168.1.20"
 		}),
@@ -230,7 +242,7 @@ func TestPasteRetriesImageUploadWithFreshRoute(t *testing.T) {
 			{Name: "lan", SSHTarget: "devbox-lan", Priority: 10},
 		},
 	}}}
-	routes := remote.NewManager(func(target string) bool { return true })
+	routes := fakeRoutes(func(target string) bool { return true })
 	publicFirst := true
 	routes.Tester = func(route config.Route) (time.Duration, bool) {
 		if publicFirst {
@@ -296,7 +308,7 @@ func TestHandlePasteReturnsRemoteTextDirectly(t *testing.T) {
 		Config:    cfg,
 		Sessions:  fakeSessions{terminal.Session{SessionKey: "s1", DetectedHost: "vm-devbox"}},
 		Clipboard: fakeClipboard{item: clipboard.Item{Kind: clipboard.KindText, Data: []byte("hello")}},
-		Routes:    remote.NewManager(func(target string) bool { return true }),
+		Routes:    fakeRoutes(func(target string) bool { return true }),
 		Uploader: remote.Uploader{
 			Runner: func(data []byte, target, remotePath string) error {
 				uploaded = true
@@ -326,7 +338,7 @@ func TestHandlePasteReturnsClipboardError(t *testing.T) {
 		}}},
 		Clipboard:  fakeClipboard{err: errors.New("clipboard has no image or text")},
 		Paster:     nil,
-		Routes:     remote.NewManager(func(target string) bool { return true }),
+		Routes:     fakeRoutes(func(target string) bool { return true }),
 		registered: map[string]sessionBinding{},
 	}
 	resp := s.Handle(Request{Command: "paste", SessionKey: "s1", Host: "vm-devbox"})
@@ -343,7 +355,7 @@ func TestExplicitLocalSessionInvokesNativePaste(t *testing.T) {
 	s := &Server{
 		Config:     &config.Config{},
 		Paster:     paster,
-		Routes:     remote.NewManager(func(target string) bool { return true }),
+		Routes:     fakeRoutes(func(target string) bool { return true }),
 		registered: map[string]sessionBinding{},
 	}
 	resp, err := s.Paste(terminal.Session{SessionKey: "s1", Kind: terminal.SessionLocal, RawTitle: "zsh"})
@@ -371,7 +383,7 @@ func TestEmptyDetectedHostDoesNotResolveDefaultHost(t *testing.T) {
 		Sessions:    fakeSessions{terminal.Session{SessionKey: "s1", Kind: terminal.SessionLocal, RawTitle: "zsh"}},
 		Clipboard:   fakeClipboard{item: clipboard.Item{Kind: clipboard.KindPNG, Data: []byte("png")}},
 		Paster:      paster,
-		Routes:      remote.NewManager(func(target string) bool { return true }),
+		Routes:      fakeRoutes(func(target string) bool { return true }),
 		registered:  map[string]sessionBinding{},
 		recent:      nil,
 		recentBinds: nil,
@@ -394,7 +406,7 @@ func TestUnmatchedRemoteLookingSessionDoesNotInvokeNativePaste(t *testing.T) {
 	s := &Server{
 		Config:     &config.Config{},
 		Paster:     paster,
-		Routes:     remote.NewManager(func(target string) bool { return true }),
+		Routes:     fakeRoutes(func(target string) bool { return true }),
 		registered: map[string]sessionBinding{},
 	}
 	_, err := s.Paste(terminal.Session{SessionKey: "s1", DetectedHost: "mystery-box", RawTitle: "ssh dev@mystery-box", Kind: terminal.SessionRemote})
@@ -413,7 +425,7 @@ func TestLocalPasteFailureReturnsHotkeySafeErrorAndDebug(t *testing.T) {
 	s := &Server{
 		Config:     &config.Config{},
 		Paster:     &fakePaster{err: errors.New("system events denied")},
-		Routes:     remote.NewManager(func(target string) bool { return true }),
+		Routes:     fakeRoutes(func(target string) bool { return true }),
 		registered: map[string]sessionBinding{},
 	}
 	_, err := s.Paste(terminal.Session{SessionKey: "s1", Kind: terminal.SessionLocal, RawTitle: "zsh"})
@@ -442,7 +454,7 @@ func TestRegisterSessionUsesExplicitMachineBinding(t *testing.T) {
 		Config:    cfg,
 		Sessions:  fakeSessions{terminal.Session{SessionKey: "s2", DetectedHost: "vm-prod", RawTitle: "ssh dev@vm-prod"}},
 		Clipboard: fakeClipboard{item: clipboard.Item{Kind: clipboard.KindPNG, Data: []byte("png")}},
-		Routes:    remote.NewManager(func(target string) bool { return true }),
+		Routes:    fakeRoutes(func(target string) bool { return true }),
 		Uploader: remote.Uploader{
 			Now: func() time.Time { return time.Date(2026, 4, 28, 12, 15, 41, 0, time.UTC) },
 			Runner: func(data []byte, target, remotePath string) error {
@@ -472,50 +484,105 @@ func TestRegisterSessionUsesExplicitMachineBinding(t *testing.T) {
 		t.Fatal(err)
 	}
 	st := s.Status()
-	if st.Registered != 2 {
-		t.Fatalf("registered = %d, want 2", st.Registered)
+	if st.Registered != 1 {
+		t.Fatalf("registered = %d, want 1", st.Registered)
 	}
-	if len(st.RecentBindings) != 2 {
-		t.Fatalf("recent bindings = %d, want 2", len(st.RecentBindings))
+	if len(st.RecentBindings) != 1 {
+		t.Fatalf("recent bindings = %d, want 1", len(st.RecentBindings))
 	}
-	if st.RecentBindings[1].Machine != "devbox" || st.RecentBindings[1].SSHAlias != "devbox-public" {
-		t.Fatalf("binding = %+v", st.RecentBindings[1])
+	if st.RecentBindings[0].Machine != "devbox" || st.RecentBindings[0].SSHAlias != "devbox-public" {
+		t.Fatalf("binding = %+v", st.RecentBindings[0])
 	}
 }
 
-func TestRegisterSessionAlsoBindsActiveItermSessionKey(t *testing.T) {
-	cfg := &config.Config{Hosts: []config.Host{{
-		Name:       "devbox",
-		MatchHosts: []string{"vm-devbox"},
-		Routes:     []config.Route{{Name: "public", SSHTarget: "devbox-public"}},
-	}}}
-	s := &Server{
-		Config:    cfg,
-		Sessions:  fakeSessions{terminal.Session{SessionKey: "iterm-stable-id", RawTitle: "tmux", Kind: terminal.SessionLocal}},
-		Clipboard: fakeClipboard{item: clipboard.Item{Kind: clipboard.KindPNG, Data: []byte("png")}},
-		Routes:    remote.NewManager(func(target string) bool { return true }),
-		Uploader: remote.Uploader{
-			Now: func() time.Time { return time.Date(2026, 4, 28, 12, 15, 41, 0, time.UTC) },
-			Runner: func(data []byte, target, remotePath string) error {
-				if target != "devbox-public" {
-					t.Fatalf("target = %q, want devbox-public", target)
+func TestRegisterSessionDoesNotBindUnrelatedActiveSession(t *testing.T) {
+	const sessionID = "6D971530-022E-445E-BC00-081EFEDC2C5A"
+	for _, key := range []string{"term-session-id", "w0t1p0:" + sessionID} {
+		for _, alreadyBound := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/bound=%v", key, alreadyBound), func(t *testing.T) {
+				cfg := &config.Config{Hosts: []config.Host{{Name: "devbox"}, {Name: "prod"}}}
+				active := terminal.Session{SessionKey: "other-iterm-session", Kind: terminal.SessionLocal, RawTitle: "tmux"}
+				activeCalls := 0
+				s := &Server{
+					Config: cfg,
+					Sessions: sessionProviderFunc(func() (terminal.Session, error) {
+						activeCalls++
+						return active, nil
+					}),
+					registered: map[string]sessionBinding{},
 				}
-				return nil
-			},
-		},
+				if alreadyBound {
+					s.registerSession(active, sessionBinding{Machine: "prod"})
+				}
+
+				resp := s.Handle(Request{Command: "register_session", Machine: "devbox", SessionKey: key})
+				if resp.Error != "" {
+					t.Fatalf("register response error = %q", resp.Error)
+				}
+				if activeCalls != 0 {
+					t.Fatalf("explicit registration queried the focused session %d times", activeCalls)
+				}
+				if host, ok := s.resolveSessionHost(terminal.Session{SessionKey: key}); !ok || host.Name != "devbox" {
+					t.Fatalf("registering session host = %+v ok=%v, want devbox", host, ok)
+				}
+				if host, ok := s.resolveSessionHost(active); ok != alreadyBound || alreadyBound && host.Name != "prod" {
+					t.Fatalf("unrelated session host = %+v ok=%v, previously bound=%v", host, ok, alreadyBound)
+				}
+				if key != "term-session-id" {
+					if host, ok := s.resolveSessionHost(terminal.Session{SessionKey: sessionID}); !ok || host.Name != "devbox" {
+						t.Fatalf("stable session ID host = %+v ok=%v, want devbox", host, ok)
+					}
+				}
+			})
+		}
+	}
+}
+
+func TestRegisterSessionDerivesItermSessionKeyWithoutProvider(t *testing.T) {
+	const sessionID = "6D971530-022E-445E-BC00-081EFEDC2C5A"
+	s := &Server{
+		Config:     &config.Config{Hosts: []config.Host{{Name: "devbox"}}},
 		registered: map[string]sessionBinding{},
 	}
-
-	resp := s.Handle(Request{Command: "register_session", Machine: "devbox", SessionKey: "term-session-id"})
+	resp := s.Handle(Request{Command: "register_session", Machine: "devbox", SessionKey: "  w0t1p0:" + sessionID + "  "})
 	if resp.Error != "" {
 		t.Fatalf("register response error = %q", resp.Error)
 	}
-	if _, err := s.Paste(terminal.Session{SessionKey: "iterm-stable-id", RawTitle: "tmux", Kind: terminal.SessionLocal}); err != nil {
-		t.Fatal(err)
+	for _, key := range []string{"w0t1p0:" + sessionID, sessionID} {
+		if host, ok := s.resolveSessionHost(terminal.Session{SessionKey: key}); !ok || host.Name != "devbox" {
+			t.Fatalf("session %q host = %+v ok=%v, want devbox", key, host, ok)
+		}
+	}
+	if got := s.Status().Registered; got != 2 {
+		t.Fatalf("registered = %d, want explicit key and derived alias", got)
+	}
+}
+
+func TestRegisterSessionWithoutExplicitKeyUsesActiveSession(t *testing.T) {
+	for _, key := range []string{"", "   "} {
+		t.Run(fmt.Sprintf("key=%q", key), func(t *testing.T) {
+			calls := 0
+			s := &Server{
+				Config: &config.Config{Hosts: []config.Host{{Name: "devbox"}}},
+				Sessions: sessionProviderFunc(func() (terminal.Session, error) {
+					calls++
+					return terminal.Session{SessionKey: "active-session"}, nil
+				}),
+				registered: map[string]sessionBinding{},
+			}
+			resp := s.Handle(Request{Command: "register_session", Machine: "devbox", SessionKey: key})
+			if resp.Error != "" || calls != 1 {
+				t.Fatalf("response=%+v active calls=%d, want successful active lookup", resp, calls)
+			}
+			if host, ok := s.resolveSessionHost(terminal.Session{SessionKey: "active-session"}); !ok || host.Name != "devbox" {
+				t.Fatalf("active session host = %+v ok=%v, want devbox", host, ok)
+			}
+		})
 	}
 }
 
 func TestSessionBindingSurvivesDaemonRestart(t *testing.T) {
+	const sessionID = "6D971530-022E-445E-BC00-081EFEDC2C5A"
 	cfg := &config.Config{Hosts: []config.Host{
 		{
 			Name:       "devbox",
@@ -531,11 +598,11 @@ func TestSessionBindingSurvivesDaemonRestart(t *testing.T) {
 	storePath := filepath.Join(t.TempDir(), "sessions.db")
 	first := &Server{
 		Config:           cfg,
-		Sessions:         fakeSessions{terminal.Session{SessionKey: "iterm-stable-id", RawTitle: "tmux", Kind: terminal.SessionLocal}},
+		Sessions:         fakeSessions{terminal.Session{SessionKey: "unrelated-active-session", RawTitle: "tmux", Kind: terminal.SessionLocal}},
 		sessionStorePath: storePath,
 		registered:       map[string]sessionBinding{},
 	}
-	resp := first.Handle(Request{Command: "register_session", Machine: "devbox", SessionKey: "term-session-id"})
+	resp := first.Handle(Request{Command: "register_session", Machine: "devbox", SessionKey: "w0t1p0:" + sessionID})
 	if resp.Error != "" {
 		t.Fatalf("register response error = %q", resp.Error)
 	}
@@ -543,7 +610,7 @@ func TestSessionBindingSurvivesDaemonRestart(t *testing.T) {
 	second := &Server{
 		Config:           cfg,
 		Clipboard:        fakeClipboard{item: clipboard.Item{Kind: clipboard.KindPNG, Data: []byte("png")}},
-		Routes:           remote.NewManager(func(target string) bool { return true }),
+		Routes:           fakeRoutes(func(target string) bool { return true }),
 		sessionStorePath: storePath,
 		Uploader: remote.Uploader{
 			Now: func() time.Time { return time.Date(2026, 4, 28, 12, 15, 41, 0, time.UTC) },
@@ -559,10 +626,13 @@ func TestSessionBindingSurvivesDaemonRestart(t *testing.T) {
 	if err := second.loadSessionBindings(); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := second.Paste(terminal.Session{SessionKey: "term-session-id", DetectedHost: "vm-prod"}); err != nil {
+	if _, err := second.Paste(terminal.Session{SessionKey: "w0t1p0:" + sessionID, DetectedHost: "vm-prod"}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := second.Paste(terminal.Session{SessionKey: "iterm-stable-id", RawTitle: "tmux", Kind: terminal.SessionLocal}); err != nil {
+	if _, ok := second.registered["unrelated-active-session"]; ok {
+		t.Fatal("unrelated active session binding survived restart")
+	}
+	if _, err := second.Paste(terminal.Session{SessionKey: sessionID, RawTitle: "tmux", Kind: terminal.SessionLocal}); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -651,7 +721,7 @@ func TestPasteFallsBackToFocusedItermTitleWhenSessionKeyUnbound(t *testing.T) {
 		Config:    cfg,
 		Sessions:  fakeSessions{terminal.Session{SessionKey: "ssh dev@vm-devbox", DetectedHost: "vm-devbox", RawTitle: "ssh dev@vm-devbox"}},
 		Clipboard: fakeClipboard{item: clipboard.Item{Kind: clipboard.KindPNG, Data: []byte("png")}},
-		Routes:    remote.NewManager(func(target string) bool { return true }),
+		Routes:    fakeRoutes(func(target string) bool { return true }),
 		Uploader: remote.Uploader{
 			Now: func() time.Time { return time.Date(2026, 4, 28, 12, 15, 41, 0, time.UTC) },
 			Runner: func(data []byte, target, remotePath string) error {
@@ -679,7 +749,7 @@ func TestPasteUnmatchedSessionReportsSessionGuidance(t *testing.T) {
 		Sessions:    fakeSessions{terminal.Session{SessionKey: "s1", DetectedHost: "mystery-box", RawTitle: "ssh dev@mystery-box"}},
 		Clipboard:   fakeClipboard{item: clipboard.Item{Kind: clipboard.KindPNG, Data: []byte("png")}},
 		Paster:      &fakePaster{err: errors.New("system events denied")},
-		Routes:      remote.NewManager(func(target string) bool { return true }),
+		Routes:      fakeRoutes(func(target string) bool { return true }),
 		registered:  map[string]sessionBinding{},
 		recent:      nil,
 		recentBinds: nil,
@@ -710,7 +780,7 @@ func TestPasteIgnoresStaleSessionBinding(t *testing.T) {
 		Config:    cfg,
 		Sessions:  fakeSessions{terminal.Session{SessionKey: "s1", DetectedHost: "vm-devbox"}},
 		Clipboard: fakeClipboard{item: clipboard.Item{Kind: clipboard.KindPNG, Data: []byte("png")}},
-		Routes:    remote.NewManager(func(target string) bool { return true }),
+		Routes:    fakeRoutes(func(target string) bool { return true }),
 		Uploader: remote.Uploader{
 			Now: func() time.Time { return time.Date(2026, 4, 28, 12, 15, 41, 0, time.UTC) },
 			Runner: func(data []byte, target, remotePath string) error {
