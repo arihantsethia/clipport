@@ -9,6 +9,7 @@ import (
 )
 
 var userHostRE = regexp.MustCompile(`([A-Za-z0-9._%+-]+)@([A-Za-z0-9._-]+)`)
+var itermSessionKeyRE = regexp.MustCompile(`^w[0-9]+t[0-9]+p[0-9]+:([0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12})$`)
 var localShellTitleRE = regexp.MustCompile(`^-?(zsh|bash|fish|sh|tmux)$`)
 
 type ItermProvider struct {
@@ -42,6 +43,16 @@ func (p ItermProvider) ActiveSession() (Session, error) {
 		RawTitle:     title,
 		Kind:         kind,
 	}, nil
+}
+
+// NormalizeSessionKey maps an iTerm TERM_SESSION_ID to its stable AppleScript
+// UUID. Other session keys are preserved, apart from surrounding whitespace.
+func NormalizeSessionKey(key string) string {
+	key = strings.TrimSpace(key)
+	if match := itermSessionKeyRE.FindStringSubmatch(key); match != nil {
+		return match[1]
+	}
+	return key
 }
 
 func parseSessionInfo(raw string) (string, string) {

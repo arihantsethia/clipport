@@ -18,6 +18,7 @@ func TestManagerChoosesFirstHealthyRoute(t *testing.T) {
 		},
 	}
 	m := NewManager(func(target string) bool { return target == "public" })
+	m.Tester = func(config.Route) (time.Duration, bool) { return 0, false }
 	route := m.BestRoute(host)
 	if route.Name != "public" {
 		t.Fatalf("route = %q, want public", route.Name)
