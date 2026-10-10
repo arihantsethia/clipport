@@ -58,6 +58,12 @@ Clipport is useful when the remote shell needs local clipboard state:
 - passwordless SSH to each remote machine
 - writable `/tmp` on each remote machine
 
+Uploads create files with mode `0600` inside `0700` directories. Existing upload
+directories owned by the remote SSH account are tightened before writing new
+content. `/tmp/clipport` must be absent or owned by that account; symlinked or
+foreign-owned directories and existing destination files are rejected. Existing
+files are not overwritten or retroactively changed.
+
 ## Quick Start
 
 ```bash
