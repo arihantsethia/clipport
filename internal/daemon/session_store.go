@@ -77,15 +77,21 @@ func (s *Server) saveSessionBindings() error {
 	if s.sessionStorePath == "" {
 		return nil
 	}
+	// Take the snapshot inside this lock so an older save cannot overwrite a
+	// newer one. The state mutex is released before any database I/O.
+	s.sessionStoreMu.Lock()
+	defer s.sessionStoreMu.Unlock()
+
 	s.mu.Lock()
 	bindings := make(map[string]sessionBinding, len(s.registered))
-	now := time.Now()
+	cutoff := time.Now().Add(-sessionBindingTTL)
 	for key, binding := range s.registered {
-		if key != "" && binding.Machine != "" && !bindingLastUsed(binding).Before(now.Add(-sessionBindingTTL)) {
-			bindings[key] = binding
+		if key == "" || binding.Machine == "" || bindingLastUsed(binding).Before(cutoff) {
+			delete(s.registered, key)
+			continue
 		}
+		bindings[key] = binding
 	}
-	s.registered = bindings
 	s.recentBinds = recentBindingsFromMap(s.registered)
 	s.mu.Unlock()
 
