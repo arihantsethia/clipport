@@ -129,12 +129,19 @@ func (s *Server) handleConn(conn net.Conn) {
 
 func (s *Server) Handle(req Request) Response {
 	switch req.Command {
-	case "paste":
+	case "paste", "paste_bound":
+		boundOnly := req.Command == "paste_bound"
+		if boundOnly && strings.TrimSpace(req.SessionKey) == "" {
+			return pasteError(errors.New("paste_bound requires a session key"))
+		}
+		if boundOnly {
+			req.Host = "" // Explicit bindings never use title or host hints.
+		}
 		session, err := s.sessionFromRequest(req)
 		if err != nil {
 			return pasteError(err)
 		}
-		resp, err := s.Paste(session)
+		resp, err := s.paste(session, boundOnly)
 		if err != nil {
 			return pasteError(err)
 		}
@@ -183,7 +190,11 @@ func (s *Server) sessionFromRequest(req Request) (terminal.Session, error) {
 	return s.Sessions.ActiveSession()
 }
 
-func (s *Server) Paste(session terminal.Session) (resp Response, err error) {
+func (s *Server) Paste(session terminal.Session) (Response, error) {
+	return s.paste(session, false)
+}
+
+func (s *Server) paste(session terminal.Session, boundOnly bool) (resp Response, err error) {
 	start := time.Now()
 	event := eventlog.Event{Op: "paste"}
 	defer func() {
@@ -204,8 +215,11 @@ func (s *Server) Paste(session terminal.Session) (resp Response, err error) {
 	}
 	host, ok := s.resolveSessionHost(session)
 	if !ok {
-		if session.DetectedHost == "" && s.Sessions != nil {
-			if active, err := s.Sessions.ActiveSession(); err == nil {
+		if boundOnly {
+			return Response{}, s.sessionMatchError(session)
+		}
+		if session.DetectedHost == "" && s.Sessions != nil && !terminal.RequiresExplicitBinding(session.SessionKey) {
+			if active, err := s.Sessions.ActiveSession(); err == nil && (session.SessionKey == "" || terminal.NormalizeSessionKey(active.SessionKey) == terminal.NormalizeSessionKey(session.SessionKey)) {
 				session = active
 				host, ok = s.resolveSessionHost(session)
 			}
@@ -373,7 +387,7 @@ func (s *Server) sessionMatchError(session terminal.Session) error {
 		details = append(details, fmt.Sprintf("configured machines: %s", strings.Join(machines, ", ")))
 	}
 	details = append(details, `run: clipctl session register --machine <name>`)
-	return fmt.Errorf("failed to match active iTerm session (%s)", strings.Join(details, "; "))
+	return fmt.Errorf("failed to match terminal session (%s)", strings.Join(details, "; "))
 }
 
 func (s *Server) configHostNames() []string {

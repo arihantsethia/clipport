@@ -49,7 +49,7 @@ func TestInstallSessionHookWritesExpectedBlock(t *testing.T) {
 		t.Fatal(err)
 	}
 	text := string(data)
-	if !strings.Contains(text, "# clipport session begin devbox-public\nHost devbox-public\n    PermitLocalCommand yes\n    LocalCommand '/usr/local/bin/clipctl' session register --machine 'devbox' --session-key \"${TERM_SESSION_ID:-}\" --ssh-alias '%n' --ssh-host '%h' --ssh-port '%p' --ssh-user '%r'\n# clipport session end devbox-public\n") {
+	if !strings.Contains(text, "# clipport session begin devbox-public\nHost devbox-public\n    PermitLocalCommand yes\n    LocalCommand '/usr/local/bin/clipctl' session register --machine 'devbox' --ssh-alias '%n' --ssh-host '%h' --ssh-port '%p' --ssh-user '%r'\n# clipport session end devbox-public\n") {
 		t.Fatalf("config missing session block:\n%s", text)
 	}
 }
@@ -327,5 +327,58 @@ func TestRemoveForwardOnlyRemovesMatchingAlias(t *testing.T) {
 	}
 	if !strings.Contains(text, "# clipport begin staging") {
 		t.Fatalf("staging block was removed:\n%s", text)
+	}
+}
+
+func TestInstallSessionHookUpgradesLegacyTerminalArgument(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config")
+	original := "Host unrelated\n    LocalCommand echo '${TERM_SESSION_ID:-}'\n\n# clipport session begin dev\nHost dev\n    PermitLocalCommand yes\n    LocalCommand '/bin/clipctl' session register --machine 'dev' --session-key \"${TERM_SESSION_ID:-}\" --ssh-alias '%n'\n# clipport session end dev\n"
+	if err := os.WriteFile(path, []byte(original), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	backup, err := InstallSessionHook(path, "dev", "dev", "/bin/clipctl")
+	if err != nil || backup == "" {
+		t.Fatalf("backup=%q err=%v", backup, err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := strings.Replace(original, ` --session-key "${TERM_SESSION_ID:-}"`, "", 1)
+	if string(data) != want {
+		t.Fatalf("config=%q want=%q", data, want)
+	}
+	old, err := os.ReadFile(backup)
+	if err != nil || string(old) != original {
+		t.Fatalf("backup=%q err=%v", old, err)
+	}
+	if backup, err := InstallSessionHook(path, "dev", "dev", "/bin/clipctl"); err != nil || backup != "" {
+		t.Fatalf("second install not idempotent: backup=%q err=%v", backup, err)
+	}
+}
+
+func TestSessionHookUpgradePreservesCustomKeyAndRejectsUnterminatedBlock(t *testing.T) {
+	for _, tt := range []struct {
+		name, suffix string
+		wantError    bool
+	}{
+		{"custom key", "# clipport session end dev\n", false},
+		{"unterminated block", "", true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "config")
+			original := "# clipport session begin dev\nHost dev\n    LocalCommand clipctl session register --machine dev --session-key custom\n" + tt.suffix
+			if err := os.WriteFile(path, []byte(original), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			backup, err := InstallSessionHook(path, "dev", "dev", "/bin/clipctl")
+			if (err != nil) != tt.wantError || backup != "" {
+				t.Fatalf("backup=%q err=%v", backup, err)
+			}
+			data, err := os.ReadFile(path)
+			if err != nil || string(data) != original {
+				t.Fatalf("config changed: %q err=%v", data, err)
+			}
+		})
 	}
 }

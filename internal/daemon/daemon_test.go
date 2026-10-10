@@ -815,3 +815,75 @@ func TestPasteIgnoresStaleSessionBinding(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestExplicitTerminalPasteNeverFallsBackToAnotherPane(t *testing.T) {
+	for _, key := range []string{"ghostty:launch:uuid", "wezterm:socket:0", "unbound-iterm-pane"} {
+		t.Run(key, func(t *testing.T) {
+			paster := &fakePaster{}
+			s := &Server{
+				Config: &config.Config{Hosts: []config.Host{{Name: "prod"}}},
+				Sessions: fakeSessions{terminal.Session{
+					SessionKey: "other-pane", DetectedHost: "prod", Kind: terminal.SessionLocal,
+				}},
+				Paster:     paster,
+				registered: map[string]sessionBinding{},
+			}
+			resp := s.Handle(Request{Command: "paste", SessionKey: key})
+			if resp.Error == "" || resp.Path != "" || resp.Text != "" || paster.called {
+				t.Fatalf("unmapped pane used another target: resp=%+v nativePaste=%v", resp, paster.called)
+			}
+		})
+	}
+}
+
+func TestTerminalBindingsKeepIdenticalPaneIDsSeparate(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	s := &Server{
+		Config:     &config.Config{Hosts: []config.Host{{Name: "dev"}, {Name: "prod"}}},
+		registered: map[string]sessionBinding{},
+	}
+	bindings := map[string]string{
+		"ghostty:app:0": "dev", "wezterm:socket:0": "prod", "wezterm:new-socket:0": "dev",
+	}
+	for key, machine := range bindings {
+		resp := s.Handle(Request{Command: "register_session", SessionKey: key, Machine: machine})
+		if resp.Error != "" {
+			t.Fatal(resp.Error)
+		}
+	}
+	for key, machine := range bindings {
+		host, ok := s.resolveSessionHost(terminal.Session{SessionKey: key})
+		if !ok || host.Name != machine {
+			t.Fatalf("%s resolved to %+v, found=%v", key, host, ok)
+		}
+	}
+}
+
+func TestBoundPasteRejectsMissingBindingAndHostHints(t *testing.T) {
+	for _, key := range []string{"", "same-pane", "ghostty:app:uuid", "wezterm:socket:1"} {
+		paster := &fakePaster{}
+		s := &Server{
+			Config:     &config.Config{Hosts: []config.Host{{Name: "prod"}}},
+			Sessions:   fakeSessions{terminal.Session{SessionKey: key, DetectedHost: "prod", Kind: terminal.SessionLocal}},
+			Paster:     paster,
+			registered: map[string]sessionBinding{},
+		}
+		resp := s.Handle(Request{Command: "paste_bound", SessionKey: key, Host: "prod"})
+		if resp.Error == "" || resp.Text != "" || resp.Path != "" || paster.called {
+			t.Fatalf("key=%q resp=%+v nativePaste=%v", key, resp, paster.called)
+		}
+	}
+}
+
+func TestBoundPasteReturnsRegisteredClipboardText(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	s := &Server{
+		Config:     &config.Config{Hosts: []config.Host{{Name: "dev"}}},
+		Clipboard:  fakeClipboard{item: clipboard.Item{Kind: clipboard.KindText, Data: []byte("exact text\n\n")}},
+		registered: map[string]sessionBinding{"wezterm:socket:0": {Machine: "dev"}},
+	}
+	resp := s.Handle(Request{Command: "paste_bound", SessionKey: "wezterm:socket:0"})
+	if resp.Error != "" || resp.Text != "exact text\n\n" || resp.Path != "" {
+		t.Fatalf("resp=%+v", resp)
+	}
+}

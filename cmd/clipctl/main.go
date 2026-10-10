@@ -42,23 +42,18 @@ func main() {
 	case "help":
 		usage()
 	case "paste":
-		sessionKey := sessionKeyFromEnv()
-		resp, err := daemon.Send(*socketPath, daemon.Request{Command: "paste", SessionKey: sessionKey})
-		if err != nil && isUnmappedSessionFailure(resp) {
-			if repaired, _ := repairUnmappedSession(*socketPath, sessionKey, config.LoadDefault, terminal.ItermProvider{}.ActiveSession, confirmRepairMachine); repaired {
-				resp, err = daemon.Send(*socketPath, daemon.Request{Command: "paste", SessionKey: sessionKey})
-			}
-		}
-		if err != nil {
-			fmt.Fprintln(os.Stderr, pasteErrorMessage(resp, err, *debug))
+		if err := runPaste(*socketPath, *debug, flag.Args()[1:]); err != nil {
+			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
 		}
-		if output := pasteOutput(resp); output != "" {
-			fmt.Print(output)
+	case "paste-to":
+		if err := runPasteTo(*socketPath, *debug, flag.Args()[1:]); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
 		}
 	case "session":
 		if flag.NArg() < 2 || flag.Arg(1) != "register" {
-			fmt.Fprintln(os.Stderr, "usage: clipctl [--socket path] session register --machine name [--session-key key] [--ssh-alias alias] [--ssh-host host] [--ssh-port port] [--ssh-user user]")
+			fmt.Fprintln(os.Stderr, "usage: clipctl [--socket path] session register --machine name [--terminal ghostty|wezterm] [--pane-id id] [--session-key key] [--ssh-alias alias] [--ssh-host host] [--ssh-port port] [--ssh-user user]")
 			os.Exit(2)
 		}
 		registerSession(*socketPath, flag.Args()[2:], "machine")
@@ -351,8 +346,9 @@ func portFromAddr(addr string) int {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: clipctl [--socket path] [--debug] paste")
-	fmt.Fprintln(os.Stderr, "       clipctl [--socket path] session register --machine name [--session-key key] [--ssh-alias alias] [--ssh-host host] [--ssh-port port] [--ssh-user user]")
+	fmt.Fprintln(os.Stderr, "usage: clipctl [--socket path] [--debug] paste [--terminal ghostty|wezterm] [--pane-id id] [--session-key key]")
+	fmt.Fprintln(os.Stderr, "       clipctl [--socket path] [--debug] paste-to --terminal ghostty")
+	fmt.Fprintln(os.Stderr, "       clipctl [--socket path] session register --machine name [--terminal ghostty|wezterm] [--pane-id id] [--session-key key] [--ssh-alias alias] [--ssh-host host] [--ssh-port port] [--ssh-user user]")
 	fmt.Fprintln(os.Stderr, "       clipctl [--socket path] register-session --host name [--session-key key]")
 	fmt.Fprintln(os.Stderr, "       clipctl [--socket path] status")
 	fmt.Fprintln(os.Stderr, "       clipctl start [--config path]")
@@ -401,7 +397,7 @@ func pasteOutput(resp daemon.Response) string {
 }
 
 func isUnmappedSessionFailure(resp daemon.Response) bool {
-	return strings.Contains(resp.Debug, "failed to match active iTerm session")
+	return strings.Contains(resp.Debug, "failed to match terminal session") || strings.Contains(resp.Debug, "failed to match active iTerm session")
 }
 
 func repairUnmappedSession(socketPath string, sessionKey string, loadConfig func() (*config.Config, error), activeSession func() (terminal.Session, error), confirm func([]config.Host) (string, bool, error)) (bool, error) {
@@ -409,7 +405,13 @@ func repairUnmappedSession(socketPath string, sessionKey string, loadConfig func
 	if err != nil {
 		return false, err
 	}
-	session, _ := activeSession()
+	session, err := activeSession()
+	if err != nil {
+		return false, err
+	}
+	if sessionKey != "" && terminal.NormalizeSessionKey(sessionKey) != terminal.NormalizeSessionKey(session.SessionKey) {
+		return false, nil
+	}
 	if strings.TrimSpace(sessionKey) == "" {
 		sessionKey = session.SessionKey
 	}
@@ -501,16 +503,23 @@ func registerSession(socketPath string, args []string, machineFlag string) {
 	sshHost := register.String("ssh-host", "", "resolved SSH host")
 	sshPort := register.String("ssh-port", "", "resolved SSH port")
 	sshUser := register.String("ssh-user", "", "resolved SSH user")
-	sessionKey := register.String("session-key", sessionKeyFromEnv(), "terminal session key")
+	sessionKey := register.String("session-key", "", "explicit terminal session key")
+	terminalName := register.String("terminal", "", "terminal: ghostty or wezterm")
+	paneID := register.String("pane-id", "", "WezTerm pane ID")
 	_ = register.Parse(args)
 	if *machine == "" {
 		fmt.Fprintf(os.Stderr, "clipctl: session register requires --%s\n", machineFlag)
 		os.Exit(2)
 	}
-	_, err := daemon.Send(socketPath, daemon.Request{
+	key, err := resolveSessionKey(*terminalName, *paneID, *sessionKey, os.Getenv, terminal.GhosttyProvider{}.ActiveSession)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "clipctl: %v\n", err)
+		os.Exit(1)
+	}
+	_, err = daemon.Send(socketPath, daemon.Request{
 		Command:    "register_session",
 		Machine:    *machine,
-		SessionKey: *sessionKey,
+		SessionKey: key,
 		SSHAlias:   *sshAlias,
 		SSHHost:    *sshHost,
 		SSHPort:    *sshPort,
@@ -622,10 +631,6 @@ func installSessionHooks(configPath, sshConfigPath, clipctlBin string) ([]string
 		lines = append(lines, fmt.Sprintf("session hook already present for %s -> %s", hook.alias, hook.machine))
 	}
 	return lines, nil
-}
-
-func sessionKeyFromEnv() string {
-	return os.Getenv("TERM_SESSION_ID")
 }
 
 func defaultClipctlBin() string {
