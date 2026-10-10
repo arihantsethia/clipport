@@ -1,7 +1,9 @@
 package daemon
 
 import (
+	"fmt"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -73,5 +75,62 @@ func TestLoadSessionBindingsNormalizesLegacyItermKeys(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestConcurrentSessionSavesPreserveBindings(t *testing.T) {
+	const workers, registrations = 8, 8
+	s := &Server{
+		Config:           &config.Config{Hosts: []config.Host{{Name: "devbox"}}},
+		sessionStorePath: filepath.Join(t.TempDir(), "sessions.db"),
+		registered:       map[string]sessionBinding{},
+	}
+	start := make(chan struct{})
+	errs := make(chan error, workers)
+	var wg sync.WaitGroup
+	for worker := range workers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			for n := range registrations {
+				key := fmt.Sprintf("session-%d-%d", worker, n)
+				resp := s.Handle(Request{Command: "register_session", SessionKey: key, Machine: "devbox"})
+				if resp.Error != "" {
+					errs <- fmt.Errorf("register %s: %s", key, resp.Error)
+					return
+				}
+				// Lookup updates LastUsed while other requests persist their snapshots.
+				if _, ok := s.resolveSessionHost(terminal.Session{SessionKey: key}); !ok {
+					errs <- fmt.Errorf("registered session %s disappeared", key)
+					return
+				}
+			}
+		}()
+	}
+	close(start)
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Error(err)
+	}
+
+	// Do not save again here: that would hide a stale snapshot winning the
+	// last write. Every successful registration must already be durable.
+	reloaded := &Server{Config: s.Config, sessionStorePath: s.sessionStorePath}
+	if err := reloaded.loadSessionBindings(); err != nil {
+		t.Fatal(err)
+	}
+	if got := reloaded.Status().Registered; got != workers*registrations {
+		t.Fatalf("persisted bindings = %d, want %d", got, workers*registrations)
+	}
+	for worker := range workers {
+		for n := range registrations {
+			key := fmt.Sprintf("session-%d-%d", worker, n)
+			host, ok := reloaded.resolveSessionHost(terminal.Session{SessionKey: key})
+			if !ok || host.Name != "devbox" {
+				t.Errorf("reloaded host for %s = %+v, found = %v; want devbox", key, host, ok)
+			}
+		}
 	}
 }
