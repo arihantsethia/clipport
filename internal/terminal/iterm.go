@@ -45,13 +45,14 @@ func (p ItermProvider) ActiveSession() (Session, error) {
 	}, nil
 }
 
-// ItermSessionID returns the stable ID used by AppleScript for an iTerm
-// TERM_SESSION_ID (w<window>t<tab>p<pane>:<UUID>). Unknown formats have no alias.
-func ItermSessionID(key string) string {
-	if match := itermSessionKeyRE.FindStringSubmatch(strings.TrimSpace(key)); match != nil {
+// NormalizeSessionKey maps an iTerm TERM_SESSION_ID to its stable AppleScript
+// UUID. Other session keys are preserved, apart from surrounding whitespace.
+func NormalizeSessionKey(key string) string {
+	key = strings.TrimSpace(key)
+	if match := itermSessionKeyRE.FindStringSubmatch(key); match != nil {
 		return match[1]
 	}
-	return ""
+	return key
 }
 
 func parseSessionInfo(raw string) (string, string) {

@@ -164,11 +164,6 @@ func (s *Server) Handle(req Request) Response {
 			LastUsed:  now,
 		}
 		s.registerSession(session, binding)
-		// Derive the AppleScript ID from the registering session, never from
-		// whichever tab happens to be focused when the SSH hook completes.
-		if key := terminal.ItermSessionID(session.SessionKey); key != "" {
-			s.registerSession(terminal.Session{SessionKey: key}, binding)
-		}
 		if err := s.saveSessionBindings(); err != nil {
 			return Response{Error: fmt.Sprintf("save session binding: %v", err)}
 		}
@@ -275,16 +270,17 @@ func pasteError(err error) Response {
 }
 
 func (s *Server) resolveSessionHost(session terminal.Session) (config.Host, bool) {
+	key := terminal.NormalizeSessionKey(session.SessionKey)
 	s.mu.Lock()
-	binding := s.registered[session.SessionKey]
+	binding := s.registered[key]
 	if binding.Machine != "" {
 		if host, ok := s.Config.ResolveHost(binding.Machine); ok {
 			binding.LastUsed = time.Now()
-			s.registered[session.SessionKey] = binding
+			s.registered[key] = binding
 			s.mu.Unlock()
 			return host, true
 		}
-		delete(s.registered, session.SessionKey)
+		delete(s.registered, key)
 	}
 	s.mu.Unlock()
 	if strings.TrimSpace(session.DetectedHost) == "" {
@@ -332,6 +328,7 @@ func (s *Server) recordEvent(e eventlog.Event) {
 }
 
 func (s *Server) registerSession(session terminal.Session, binding sessionBinding) {
+	session.SessionKey = terminal.NormalizeSessionKey(session.SessionKey)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.registered[session.SessionKey] = binding

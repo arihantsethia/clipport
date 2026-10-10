@@ -7,6 +7,8 @@ import (
 	"sort"
 	"time"
 
+	"github.com/arihantsethia/clipport/internal/terminal"
+
 	_ "github.com/mattn/go-sqlite3"
 )
 
@@ -35,7 +37,7 @@ func (s *Server) loadSessionBindings() error {
 	rows, err := db.Query(`
 SELECT session_key, machine, ssh_alias, ssh_host, ssh_port, ssh_user, created_at, last_used
 FROM session_bindings
-ORDER BY last_used DESC`)
+ORDER BY last_used DESC, session_key ASC`)
 	if err != nil {
 		return err
 	}
@@ -51,8 +53,13 @@ ORDER BY last_used DESC`)
 		}
 		binding.CreatedAt = parseSessionTime(createdAt)
 		binding.LastUsed = parseSessionTime(lastUsed)
+		key = terminal.NormalizeSessionKey(key)
 		if key != "" && binding.Machine != "" {
-			loaded[key] = binding
+			// Older stores may contain both spellings. Keep the most recently
+			// used binding; the query returns those first.
+			if _, exists := loaded[key]; !exists {
+				loaded[key] = binding
+			}
 		}
 	}
 	if err := rows.Err(); err != nil {

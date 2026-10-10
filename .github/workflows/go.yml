@@ -35,6 +35,9 @@ jobs:
       - name: go test
         run: go test ./...
 
+      - name: session race tests
+        run: go test -race ./internal/daemon ./internal/terminal
+
       - name: go vet
         run: go vet ./...
 

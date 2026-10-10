@@ -2,7 +2,6 @@ package daemon
 
 import (
 	"errors"
-	"fmt"
 	"net"
 	"os"
 	"path/filepath"
@@ -20,10 +19,6 @@ import (
 type fakeSessions struct{ session terminal.Session }
 
 func (f fakeSessions) ActiveSession() (terminal.Session, error) { return f.session, nil }
-
-type sessionProviderFunc func() (terminal.Session, error)
-
-func (f sessionProviderFunc) ActiveSession() (terminal.Session, error) { return f() }
 
 func fakeRoutes(probe remote.ProbeFunc) *remote.Manager {
 	routes := remote.NewManager(probe)
@@ -104,6 +99,7 @@ func shortSocketPath(t *testing.T) string {
 }
 
 func TestPasteReturnsRemotePNGPath(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
 	cfg := &config.Config{Hosts: []config.Host{{
 		Name:       "devbox",
 		MatchHosts: []string{"vm-devbox"},
@@ -142,6 +138,7 @@ func TestPasteReturnsRemotePNGPath(t *testing.T) {
 }
 
 func TestPasteRecordsSuccessEvent(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
 	events := &memoryEvents{}
 	cfg := &config.Config{Hosts: []config.Host{{
 		Name:       "devbox",
@@ -173,6 +170,7 @@ func TestPasteRecordsSuccessEvent(t *testing.T) {
 }
 
 func TestPasteRecordsFailureEvent(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
 	events := &memoryEvents{}
 	s := &Server{
 		Config: &config.Config{Hosts: []config.Host{{
@@ -234,6 +232,7 @@ func TestStatusIncludesPreferredHostRouteTarget(t *testing.T) {
 }
 
 func TestPasteRetriesImageUploadWithFreshRoute(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
 	cfg := &config.Config{Hosts: []config.Host{{
 		Name:       "devbox",
 		MatchHosts: []string{"vm-devbox"},
@@ -298,6 +297,7 @@ func TestPasteRetriesImageUploadWithFreshRoute(t *testing.T) {
 }
 
 func TestHandlePasteReturnsRemoteTextDirectly(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
 	cfg := &config.Config{Hosts: []config.Host{{
 		Name:       "devbox",
 		MatchHosts: []string{"vm-devbox"},
@@ -330,6 +330,7 @@ func TestHandlePasteReturnsRemoteTextDirectly(t *testing.T) {
 }
 
 func TestHandlePasteReturnsClipboardError(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
 	s := &Server{
 		Config: &config.Config{Hosts: []config.Host{{
 			Name:       "devbox",
@@ -351,6 +352,7 @@ func TestHandlePasteReturnsClipboardError(t *testing.T) {
 }
 
 func TestExplicitLocalSessionInvokesNativePaste(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
 	paster := &fakePaster{}
 	s := &Server{
 		Config:     &config.Config{},
@@ -371,6 +373,7 @@ func TestExplicitLocalSessionInvokesNativePaste(t *testing.T) {
 }
 
 func TestEmptyDetectedHostDoesNotResolveDefaultHost(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
 	paster := &fakePaster{}
 	s := &Server{
 		Config: &config.Config{
@@ -402,6 +405,7 @@ func TestEmptyDetectedHostDoesNotResolveDefaultHost(t *testing.T) {
 }
 
 func TestUnmatchedRemoteLookingSessionDoesNotInvokeNativePaste(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
 	paster := &fakePaster{}
 	s := &Server{
 		Config:     &config.Config{},
@@ -422,6 +426,7 @@ func TestUnmatchedRemoteLookingSessionDoesNotInvokeNativePaste(t *testing.T) {
 }
 
 func TestLocalPasteFailureReturnsHotkeySafeErrorAndDebug(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
 	s := &Server{
 		Config:     &config.Config{},
 		Paster:     &fakePaster{err: errors.New("system events denied")},
@@ -438,6 +443,7 @@ func TestLocalPasteFailureReturnsHotkeySafeErrorAndDebug(t *testing.T) {
 }
 
 func TestRegisterSessionUsesExplicitMachineBinding(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
 	cfg := &config.Config{Hosts: []config.Host{
 		{
 			Name:       "devbox",
@@ -496,92 +502,100 @@ func TestRegisterSessionUsesExplicitMachineBinding(t *testing.T) {
 }
 
 func TestRegisterSessionDoesNotBindUnrelatedActiveSession(t *testing.T) {
-	const sessionID = "6D971530-022E-445E-BC00-081EFEDC2C5A"
-	for _, key := range []string{"term-session-id", "w0t1p0:" + sessionID} {
-		for _, alreadyBound := range []bool{false, true} {
-			t.Run(fmt.Sprintf("%s/bound=%v", key, alreadyBound), func(t *testing.T) {
-				cfg := &config.Config{Hosts: []config.Host{{Name: "devbox"}, {Name: "prod"}}}
-				active := terminal.Session{SessionKey: "other-iterm-session", Kind: terminal.SessionLocal, RawTitle: "tmux"}
-				activeCalls := 0
-				s := &Server{
-					Config: cfg,
-					Sessions: sessionProviderFunc(func() (terminal.Session, error) {
-						activeCalls++
-						return active, nil
-					}),
-					registered: map[string]sessionBinding{},
-				}
-				if alreadyBound {
-					s.registerSession(active, sessionBinding{Machine: "prod"})
-				}
-
-				resp := s.Handle(Request{Command: "register_session", Machine: "devbox", SessionKey: key})
-				if resp.Error != "" {
-					t.Fatalf("register response error = %q", resp.Error)
-				}
-				if activeCalls != 0 {
-					t.Fatalf("explicit registration queried the focused session %d times", activeCalls)
-				}
-				if host, ok := s.resolveSessionHost(terminal.Session{SessionKey: key}); !ok || host.Name != "devbox" {
-					t.Fatalf("registering session host = %+v ok=%v, want devbox", host, ok)
-				}
-				if host, ok := s.resolveSessionHost(active); ok != alreadyBound || alreadyBound && host.Name != "prod" {
-					t.Fatalf("unrelated session host = %+v ok=%v, previously bound=%v", host, ok, alreadyBound)
-				}
-				if key != "term-session-id" {
-					if host, ok := s.resolveSessionHost(terminal.Session{SessionKey: sessionID}); !ok || host.Name != "devbox" {
-						t.Fatalf("stable session ID host = %+v ok=%v, want devbox", host, ok)
-					}
-				}
-			})
-		}
+	for _, tt := range []struct {
+		name  string
+		bound bool
+	}{
+		{name: "unbound focused tab"},
+		{name: "already bound focused tab", bound: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			active := terminal.Session{SessionKey: "other-session"}
+			s := &Server{
+				Config:     &config.Config{Hosts: []config.Host{{Name: "devbox"}, {Name: "prod"}}},
+				Sessions:   fakeSessions{active},
+				registered: map[string]sessionBinding{},
+			}
+			if tt.bound {
+				s.registerSession(active, sessionBinding{Machine: "prod"})
+			}
+			resp := s.Handle(Request{Command: "register_session", Machine: "devbox", SessionKey: "origin-session"})
+			if resp.Error != "" {
+				t.Fatal(resp.Error)
+			}
+			host, ok := s.resolveSessionHost(terminal.Session{SessionKey: "origin-session"})
+			if !ok || host.Name != "devbox" {
+				t.Fatalf("origin host = %+v, found = %v; want devbox", host, ok)
+			}
+			host, ok = s.resolveSessionHost(active)
+			if ok != tt.bound {
+				t.Fatalf("focused tab bound = %v, want %v", ok, tt.bound)
+			}
+			if tt.bound && host.Name != "prod" {
+				t.Fatalf("focused tab host = %q, want prod", host.Name)
+			}
+		})
 	}
 }
 
-func TestRegisterSessionDerivesItermSessionKeyWithoutProvider(t *testing.T) {
-	const sessionID = "6D971530-022E-445E-BC00-081EFEDC2C5A"
+func TestRegisterSessionUsesOneItermBinding(t *testing.T) {
+	const id = "6D971530-022E-445E-BC00-081EFEDC2C5A"
 	s := &Server{
-		Config:     &config.Config{Hosts: []config.Host{{Name: "devbox"}}},
+		Config:     &config.Config{Hosts: []config.Host{{Name: "devbox"}, {Name: "prod"}}},
 		registered: map[string]sessionBinding{},
 	}
-	resp := s.Handle(Request{Command: "register_session", Machine: "devbox", SessionKey: "  w0t1p0:" + sessionID + "  "})
-	if resp.Error != "" {
-		t.Fatalf("register response error = %q", resp.Error)
-	}
-	for _, key := range []string{"w0t1p0:" + sessionID, sessionID} {
-		if host, ok := s.resolveSessionHost(terminal.Session{SessionKey: key}); !ok || host.Name != "devbox" {
-			t.Fatalf("session %q host = %+v ok=%v, want devbox", key, host, ok)
+	// Register through the shell, then reconnect through the AppleScript ID.
+	// Neither path needs a focused-session provider.
+	for _, tt := range []struct{ key, machine string }{
+		{key: "  w0t1p0:" + id + "  ", machine: "devbox"},
+		{key: id, machine: "prod"},
+		{key: "w2t3p1:" + id, machine: "devbox"},
+	} {
+		resp := s.Handle(Request{Command: "register_session", SessionKey: tt.key, Machine: tt.machine})
+		if resp.Error != "" {
+			t.Fatal(resp.Error)
 		}
-	}
-	if got := s.Status().Registered; got != 2 {
-		t.Fatalf("registered = %d, want explicit key and derived alias", got)
+		for _, key := range []string{id, "w0t1p0:" + id, "w2t3p1:" + id} {
+			host, ok := s.resolveSessionHost(terminal.Session{SessionKey: key})
+			if !ok || host.Name != tt.machine {
+				t.Fatalf("host for %q = %+v, found = %v; want %s", key, host, ok, tt.machine)
+			}
+		}
+		st := s.Status()
+		if st.Registered != 1 || len(st.RecentBindings) != 1 {
+			t.Fatalf("want one session binding, got %+v", st)
+		}
+		if st.RecentBindings[0].SessionKey != id || st.RecentBindings[0].Machine != tt.machine {
+			t.Fatalf("recent binding = %+v", st.RecentBindings[0])
+		}
 	}
 }
 
 func TestRegisterSessionWithoutExplicitKeyUsesActiveSession(t *testing.T) {
-	for _, key := range []string{"", "   "} {
-		t.Run(fmt.Sprintf("key=%q", key), func(t *testing.T) {
-			calls := 0
+	for _, tt := range []struct{ name, key string }{
+		{name: "empty"},
+		{name: "whitespace", key: "   "},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
 			s := &Server{
-				Config: &config.Config{Hosts: []config.Host{{Name: "devbox"}}},
-				Sessions: sessionProviderFunc(func() (terminal.Session, error) {
-					calls++
-					return terminal.Session{SessionKey: "active-session"}, nil
-				}),
+				Config:     &config.Config{Hosts: []config.Host{{Name: "devbox"}}},
+				Sessions:   fakeSessions{terminal.Session{SessionKey: "active-session"}},
 				registered: map[string]sessionBinding{},
 			}
-			resp := s.Handle(Request{Command: "register_session", Machine: "devbox", SessionKey: key})
-			if resp.Error != "" || calls != 1 {
-				t.Fatalf("response=%+v active calls=%d, want successful active lookup", resp, calls)
+			resp := s.Handle(Request{Command: "register_session", Machine: "devbox", SessionKey: tt.key})
+			if resp.Error != "" {
+				t.Fatal(resp.Error)
 			}
-			if host, ok := s.resolveSessionHost(terminal.Session{SessionKey: "active-session"}); !ok || host.Name != "devbox" {
-				t.Fatalf("active session host = %+v ok=%v, want devbox", host, ok)
+			host, ok := s.resolveSessionHost(terminal.Session{SessionKey: "active-session"})
+			if !ok || host.Name != "devbox" {
+				t.Fatalf("active host = %+v, found = %v; want devbox", host, ok)
 			}
 		})
 	}
 }
 
 func TestSessionBindingSurvivesDaemonRestart(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
 	const sessionID = "6D971530-022E-445E-BC00-081EFEDC2C5A"
 	cfg := &config.Config{Hosts: []config.Host{
 		{
@@ -712,6 +726,7 @@ func TestSessionStorePrunesUnusedBindings(t *testing.T) {
 }
 
 func TestPasteFallsBackToFocusedItermTitleWhenSessionKeyUnbound(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
 	cfg := &config.Config{Hosts: []config.Host{{
 		Name:       "devbox",
 		MatchHosts: []string{"vm-devbox"},
@@ -740,6 +755,7 @@ func TestPasteFallsBackToFocusedItermTitleWhenSessionKeyUnbound(t *testing.T) {
 }
 
 func TestPasteUnmatchedSessionReportsSessionGuidance(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
 	cfg := &config.Config{Hosts: []config.Host{
 		{Name: "devbox", Routes: []config.Route{{Name: "public", SSHTarget: "devbox-public"}}},
 		{Name: "prod", Routes: []config.Route{{Name: "public", SSHTarget: "prod-public"}}},
@@ -771,6 +787,7 @@ func TestPasteUnmatchedSessionReportsSessionGuidance(t *testing.T) {
 }
 
 func TestPasteIgnoresStaleSessionBinding(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
 	cfg := &config.Config{Hosts: []config.Host{{
 		Name:       "devbox",
 		MatchHosts: []string{"vm-devbox"},
