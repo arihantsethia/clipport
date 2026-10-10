@@ -41,6 +41,7 @@ type Server struct {
 	Events    eventlog.Sink
 
 	sessionStorePath string
+	sessionStoreMu   sync.Mutex // Serializes snapshots and database writes.
 
 	mu          sync.RWMutex
 	registered  map[string]sessionBinding
