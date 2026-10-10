@@ -5,6 +5,7 @@ import (
 	"errors"
 	"github.com/arihantsethia/clipport/internal/daemon"
 	"net"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -91,7 +92,13 @@ func TestFetchPasteUsesBoundOnlyProtocol(t *testing.T) {
 		{name: "unmapped pane", response: daemon.Response{Error: daemon.PasteUnavailable, Debug: "failed to match terminal session"}, wantError: "failed to match terminal session"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			socket := filepath.Join(t.TempDir(), "daemon.sock")
+			// Keep the path below macOS's Unix-domain socket length limit.
+			dir, err := os.MkdirTemp("", "clipport-")
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { os.RemoveAll(dir) })
+			socket := filepath.Join(dir, "daemon.sock")
 			listener, err := net.Listen("unix", socket)
 			if err != nil {
 				t.Fatal(err)

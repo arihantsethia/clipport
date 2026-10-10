@@ -219,7 +219,9 @@ func (s *Server) paste(session terminal.Session, boundOnly bool) (resp Response,
 			return Response{}, s.sessionMatchError(session)
 		}
 		if session.DetectedHost == "" && s.Sessions != nil && !terminal.RequiresExplicitBinding(session.SessionKey) {
-			if active, err := s.Sessions.ActiveSession(); err == nil && (session.SessionKey == "" || terminal.NormalizeSessionKey(active.SessionKey) == terminal.NormalizeSessionKey(session.SessionKey)) {
+			active, err := s.Sessions.ActiveSession()
+			sameSession := terminal.NormalizeSessionKey(active.SessionKey) == terminal.NormalizeSessionKey(session.SessionKey)
+			if err == nil && (session.SessionKey == "" || sameSession) {
 				session = active
 				host, ok = s.resolveSessionHost(session)
 			}

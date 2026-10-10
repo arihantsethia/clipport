@@ -725,7 +725,7 @@ func TestSessionStorePrunesUnusedBindings(t *testing.T) {
 	}
 }
 
-func TestPasteFallsBackToFocusedItermTitleWhenSessionKeyUnbound(t *testing.T) {
+func TestPasteUsesFocusedItermTitleForSameUnboundSession(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	cfg := &config.Config{Hosts: []config.Host{{
 		Name:       "devbox",
@@ -734,7 +734,7 @@ func TestPasteFallsBackToFocusedItermTitleWhenSessionKeyUnbound(t *testing.T) {
 	}}}
 	s := &Server{
 		Config:    cfg,
-		Sessions:  fakeSessions{terminal.Session{SessionKey: "ssh dev@vm-devbox", DetectedHost: "vm-devbox", RawTitle: "ssh dev@vm-devbox"}},
+		Sessions:  fakeSessions{terminal.Session{SessionKey: "term-session-id", DetectedHost: "vm-devbox", RawTitle: "ssh dev@vm-devbox"}},
 		Clipboard: fakeClipboard{item: clipboard.Item{Kind: clipboard.KindPNG, Data: []byte("png")}},
 		Routes:    fakeRoutes(func(target string) bool { return true }),
 		Uploader: remote.Uploader{

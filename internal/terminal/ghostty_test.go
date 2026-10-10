@@ -3,6 +3,8 @@ package terminal
 import (
 	"errors"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
@@ -123,5 +125,25 @@ func TestGhosttyInstanceScriptOnMacOS(t *testing.T) {
 	_, err := (GhosttyProvider{}).instance()
 	if err != nil && !strings.Contains(err.Error(), "Ghostty is not running as a single app instance") {
 		t.Fatal(err)
+	}
+}
+
+// Compilation checks the real installed application's dictionary without
+// opening a window, granting Automation permission, or sending any input.
+func TestGhosttyAppleScriptCompilation(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("requires macOS AppleScript")
+	}
+	if _, err := os.Stat("/Applications/Ghostty.app"); errors.Is(err, os.ErrNotExist) {
+		t.Skip("Ghostty is not installed; CI installs it for the dedicated syntax check")
+	} else if err != nil {
+		t.Fatal(err)
+	}
+	for _, script := range []string{ghosttyActiveScript, ghosttyPasteScript} {
+		path := filepath.Join(t.TempDir(), "check.scpt")
+		out, err := exec.Command("osacompile", "-o", path, "-e", script).CombinedOutput()
+		if err != nil {
+			t.Fatalf("Ghostty AppleScript does not compile: %v: %s", err, out)
+		}
 	}
 }
