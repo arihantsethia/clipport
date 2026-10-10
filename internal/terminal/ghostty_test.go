@@ -139,11 +139,17 @@ func TestGhosttyAppleScriptCompilation(t *testing.T) {
 	} else if err != nil {
 		t.Fatal(err)
 	}
-	for _, script := range []string{ghosttyActiveScript, ghosttyPasteScript} {
-		path := filepath.Join(t.TempDir(), "check.scpt")
-		out, err := exec.Command("osacompile", "-o", path, "-e", script).CombinedOutput()
-		if err != nil {
-			t.Fatalf("Ghostty AppleScript does not compile: %v: %s", err, out)
-		}
+	for name, script := range map[string]string{"capture": ghosttyActiveScript, "paste": ghosttyPasteScript} {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			source := filepath.Join(dir, "check.applescript")
+			if err := os.WriteFile(source, []byte(script), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			out, err := exec.Command("osacompile", "-o", filepath.Join(dir, "check.scpt"), source).CombinedOutput()
+			if err != nil {
+				t.Fatalf("Ghostty AppleScript does not compile: %v: %s\n%s", err, out, script)
+			}
+		})
 	}
 }
