@@ -70,8 +70,33 @@ func sshCatUpload(data []byte, target, remotePath string) error {
 	return nil
 }
 
+// Work from checked directory inodes rather than reopening the full path for
+// the write. Refuse symlinks and directories owned by another remote account.
+const privateUploadScript = `set -eu
+umask 077
+enter_private_dir() {
+    parent=$(pwd -P)
+    mkdir -m 700 "./$1" 2>/dev/null || test -d "./$1"
+    test ! -L "./$1" || { echo "clipport: symlinked upload directory" >&2; exit 1; }
+    cd "./$1"
+    test "$(pwd -P)" = "$parent/$1" || { echo "clipport: upload directory changed" >&2; exit 1; }
+    test -O . || { echo "clipport: upload directory belongs to another account" >&2; exit 1; }
+    chmod 700 .
+}
+cd "$1"
+enter_private_dir "$2"
+enter_private_dir "$3"
+test ! -e "$4" && test ! -L "$4" || { echo "clipport: upload destination already exists" >&2; exit 1; }
+set -C
+cat > "$4"`
+
 func sshCatUploadCommand(data []byte, target, remotePath string) *exec.Cmd {
 	dir := path.Dir(remotePath)
+	base := path.Dir(dir)
+	// An explicit sh keeps the privacy checks independent of the login shell.
+	script := "sh -c " + shellQuote(privateUploadScript) + " clipport-upload " +
+		shellQuote(path.Dir(base)) + " " + shellQuote(path.Base(base)) + " " +
+		shellQuote(path.Base(dir)) + " " + shellQuote(path.Base(remotePath))
 	cmd := exec.Command(
 		"ssh",
 		"-o", "PermitLocalCommand=no",
@@ -83,7 +108,7 @@ func sshCatUploadCommand(data []byte, target, remotePath string) *exec.Cmd {
 		"-o", "ServerAliveCountMax=1",
 		"-o", "ControlMaster=no",
 		target,
-		"mkdir -p "+shellQuote(dir)+" && cat > "+shellQuote(remotePath),
+		script,
 	)
 	cmd.Stdin = bytes.NewReader(data)
 	return cmd
@@ -102,7 +127,11 @@ func cleanPathPart(s string) string {
 			b.WriteByte('_')
 		}
 	}
-	return b.String()
+	part := b.String()
+	if part == "." || part == ".." {
+		return "unknown"
+	}
+	return part
 }
 
 func shellQuote(s string) string {
