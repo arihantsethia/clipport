@@ -25,8 +25,14 @@ image or screenshot, Clipport uploads it over SSH and inserts the remote path.
 | Session | Clipboard | Terminal receives |
 |---|---|---|
 | local | text, image, or screenshot | native paste; `clipctl paste` prints nothing |
-| remote | text | clipboard text |
-| remote | screenshot or image | remote file path under `/tmp/clipport/...` |
+| configured remote | text | clipboard text |
+| configured remote | screenshot or image | remote file path under `/tmp/clipport/...` |
+| unconfigured remote | any | session-matching error; use native paste instead |
+
+Keep **Cmd+V** for native paste and use **Cmd+Shift+V** for Clipport. The current
+local-paste implementation simulates Cmd+V, so binding Clipport to Cmd+V can
+trigger itself repeatedly. Remote sessions that cannot be matched do not fall
+back to native paste.
 
 ## Demo
 
@@ -69,12 +75,18 @@ files are not overwritten or retroactively changed.
 ```bash
 brew install arihantsethia/tap/clipport
 clipctl onboard
-clipctl start
-clipctl doctor
 ```
 
-Then open an SSH session in iTerm, copy text, an image, or a screenshot on your
-Mac, and press the Clipport paste shortcut.
+Answer **Y** to configure the iTerm shortcut and automatic SSH session matching.
+Onboarding starts or restarts Clipport; do not run `clipctl start` again afterward.
+
+Open a new SSH session to a selected host in iTerm. Copy text or a screenshot
+to your Mac clipboard and press **Cmd+Shift+V** in that session. Keep **Cmd+V**
+for ordinary paste, including on unconfigured servers.
+
+Run `clipctl doctor` in a separate **local Mac pane**. Its `forward` check tests
+the optional remote clipboard tunnel, which needs [remote clipboard setup](#remote-clipboard-shims)
+and an open SSH connection. Onboarding alone does not set up that tunnel.
 
 ## Install
 
@@ -101,22 +113,30 @@ clipctl onboard
 ```
 
 Onboarding lets you choose SSH hosts, configure the iTerm paste shortcut, and
-install OpenSSH `LocalCommand` hooks for automatic session matching.
+install OpenSSH `LocalCommand` hooks for automatic session matching. Answer **Y**
+to both prompts. It also starts or restarts the installed app.
 
-Start Clipport:
+Wait a few seconds for the daemon to become ready before checking it. If you
+need to restart it later, run this on your Mac:
 
 ```bash
-clipctl start
+clipctl restart
 ```
 
-Check the install:
+Open a **new** SSH connection in iTerm after onboarding so the session hook runs.
+Existing connections do not pick up SSH config changes. In a separate local Mac
+pane, check the install:
 
 ```bash
 clipctl doctor
 ```
 
-Then open an SSH session in iTerm, copy text on your Mac, and press the
-Clipport paste shortcut. Text should appear at the remote prompt.
+The daemon and HTTP API checks should pass. A failed `forward` check is separate
+from ordinary shortcut pasting: it checks the tunnel used by remote clipboard
+shims. See [Remote Clipboard Shims](#remote-clipboard-shims) to set that up.
+
+Copy text on your Mac and press **Cmd+Shift+V** in the SSH session. Text should
+appear at the remote prompt.
 
 For images and screenshots, copy the clipboard item and press the same shortcut.
 The remote prompt receives a path like:
@@ -130,6 +150,29 @@ Test remote image upload without changing your clipboard:
 ```bash
 clipctl test-paste --host <machine>
 ```
+
+Run that command on your Mac, replacing `<machine>` with the machine name chosen
+during onboarding. It checks upload behavior, not the iTerm shortcut itself.
+
+### Check the iTerm shortcut
+
+Open **iTerm2 → Settings → Keys → Key Bindings** and inspect **Cmd+Shift+V**.
+Its command should be the absolute path to your installed `clipctl`, followed
+by `paste`, for example:
+
+```text
+/Users/yourname/.local/bin/clipctl paste
+```
+
+Run `command -v clipctl` on your Mac to check the installed path. Also inspect
+**Profiles → your active profile → Keys → Key Mappings**: a profile binding can
+override the global shortcut. `clipctl doctor` finding a saved binding does not
+prove that the active profile invokes it.
+
+Keep Cmd+V assigned to native paste. Use it for servers you have not configured
+in Clipport; the Clipport shortcut reports an error for an unmatched remote
+session. Local Clipport paste simulates Cmd+V and therefore requires Cmd+V to
+remain a native-paste shortcut.
 
 ## Behavior
 
@@ -237,12 +280,25 @@ clipctl --debug paste
 ## Remote Clipboard Shims
 
 Shims are only for remote programs that call `wl-paste` or `xclip` directly.
+Ordinary Clipport shortcut pasting does not require them. Onboarding installs
+session-matching hooks, but does **not** install shims, a `RemoteForward` rule,
+or the remote authentication token.
 
-Install shims for a configured machine:
+For remote clipboard access, run this **on your Mac** for each configured machine
+(replace `<machine>` with its name from onboarding):
 
 ```bash
 clipctl shims setup --host <machine>
 ```
+
+This adds SSH forwarding rules for the machine's routes, installs the remote
+shims, and copies your local Clipport token to the remote account. That token
+allows remote clipboard access while the tunnel is connected.
+
+Reconnect SSH using one of the configured route aliases and leave that session
+open. Then run `clipctl doctor` in a local Mac pane. The `forward` check should
+now pass. Reconnecting without first installing the forwarding rule and token
+will not fix a missing tunnel.
 
 Both local and remote tokens live at:
 
@@ -336,12 +392,33 @@ clipctl doctor
 
 Common cases:
 
+- `Bootstrap failed: 5: Input/output error` after running `clipctl start`:
+  onboarding may already have loaded the launch agent. Run `clipctl restart`,
+  wait a few seconds, then rerun `clipctl doctor`. This error alone is not a
+  reason to run Clipport as root.
+- `daemon` or `http api` reports connection refused: the app may still be
+  starting. If it persists after a restart, inspect `/tmp/clipport.err.log` and
+  `/tmp/clipportd.err.log`. An `ok launchd` result only confirms the agent is
+  loaded, not that the daemon is healthy.
+- `forward` reports connection refused: if you need remote clipboard shims,
+  run `clipctl shims setup --host <machine>` on your Mac, then reconnect SSH and
+  keep the connection open. Use `ssh -G <ssh-alias>` locally to check that the
+  effective configuration contains `remoteforward`. The default forwarded
+  endpoint is `127.0.0.1:18765`.
+- `forward` reports `401 Unauthorized`: the endpoint is reachable, but the
+  remote token is missing or does not match. Rerun
+  `clipctl shims setup --host <machine>` on your Mac to synchronize it, then
+  rerun the check with SSH connected.
+- Session matching fails despite `session hook already present`: that message
+  does not verify the existing command's path. Inspect `ssh -G <ssh-alias>` on
+  your Mac and check that `localcommand` uses your current `clipctl` executable.
+  Back up `~/.ssh/config` before correcting a stale path, then reconnect SSH.
 - LAN route fails: expected when off that network; Clipport tries the next
   route.
 - SSH shell gets native paste: run
   `clipctl session register --machine <machine>` in that iTerm session.
-- Hotkey does nothing: confirm iTerm runs `clipctl paste`, then check
-  `/tmp/clipportd.err.log`.
+- Hotkey does nothing: follow [Check the iTerm shortcut](#check-the-iterm-shortcut),
+  then check `/tmp/clipportd.err.log`.
 - Image upload fails: check passwordless SSH and remote write access to
   `/tmp/clipport`.
 
