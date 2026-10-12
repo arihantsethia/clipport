@@ -110,11 +110,14 @@ jobs:
           RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
           RELEASE_COMMIT: ${{ needs.prepare.outputs.commit }}
         run: |
-          if [[ "${EXISTING_TAG:-false}" == true ]]; then
-            gh release create "$RELEASE_TAG" --verify-tag --generate-notes --latest
-          else
-            gh release create "$RELEASE_TAG" --target "$RELEASE_COMMIT" --generate-notes --latest
+          if [[ "${EXISTING_TAG:-false}" != true ]]; then
+            # Atomic create fails if another publisher has created this tag.
+            gh api --method POST "repos/$GH_REPO/git/refs" \
+              -f "ref=refs/tags/$RELEASE_TAG" -f "sha=$RELEASE_COMMIT"
           fi
+          actual="$(gh api "repos/$GH_REPO/commits/$RELEASE_TAG" --jq .sha)"
+          test "$actual" = "$RELEASE_COMMIT"
+          gh release create "$RELEASE_TAG" --verify-tag --generate-notes --latest
           actual="$(gh api "repos/$GH_REPO/commits/$RELEASE_TAG" --jq .sha)"
           test "$actual" = "$RELEASE_COMMIT"
           gh release view "$RELEASE_TAG" --json tagName,isDraft,isPrerelease,url
