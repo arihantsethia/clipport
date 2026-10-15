@@ -90,10 +90,31 @@ func InstallSessionHook(configPath, host, machine, clipctlBin string) (string, e
 	}
 	marker := "# clipport session begin " + host
 	if hasExactLine(data, marker) {
-		return "", nil
+		// Older hooks forced iTerm's environment key, including an empty value
+		// in other terminals. Upgrade only that known argument in this block.
+		lines := strings.SplitAfter(string(data), "\n")
+		inside := false
+		for i, line := range lines {
+			trimmed := strings.TrimSpace(line)
+			if trimmed == marker {
+				inside = true
+			} else if trimmed == "# clipport session end "+host {
+				inside = false
+			} else if inside && strings.HasPrefix(trimmed, "LocalCommand ") {
+				lines[i] = strings.ReplaceAll(line, ` --session-key "${TERM_SESSION_ID:-}"`, "")
+			}
+		}
+		if inside {
+			return "", fmt.Errorf("unterminated clipport SSH session block for %s", host)
+		}
+		updated := strings.Join(lines, "")
+		if updated == string(data) {
+			return "", nil
+		}
+		return writeConfigWithBackup(configPath, data, []byte(updated))
 	}
 	block := fmt.Sprintf(
-		"\n# clipport session begin %s\nHost %s\n    PermitLocalCommand yes\n    LocalCommand %s session register --machine %s --session-key \"${TERM_SESSION_ID:-}\" --ssh-alias %s --ssh-host %s --ssh-port %s --ssh-user %s\n# clipport session end %s\n",
+		"\n# clipport session begin %s\nHost %s\n    PermitLocalCommand yes\n    LocalCommand %s session register --machine %s --ssh-alias %s --ssh-host %s --ssh-port %s --ssh-user %s\n# clipport session end %s\n",
 		host,
 		host,
 		shellQuote(clipctlBin),

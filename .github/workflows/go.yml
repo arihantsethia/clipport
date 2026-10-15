@@ -51,6 +51,19 @@ jobs:
       - name: race tests
         run: go test -race ./internal/daemon ./internal/terminal ./internal/remote
 
+      - name: WezTerm integration tests
+        run: |
+          command -v lua >/dev/null || brew install lua
+          lua integrations/wezterm_test.lua
+
+      - name: Ghostty AppleScript syntax
+        run: |
+          brew install --cask ghostty
+          /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f /Applications/Ghostty.app
+          sdef /Applications/Ghostty.app > /tmp/ghostty.sdef
+          grep -E 'name="(front window|focused terminal|input text)"' /tmp/ghostty.sdef
+          go test ./internal/terminal -run TestGhosttyAppleScriptCompilation -count=1 -v
+
       - name: go vet
         run: go vet ./...
 

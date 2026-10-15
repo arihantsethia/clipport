@@ -56,6 +56,13 @@ Clipport is useful when the remote shell needs local clipboard state:
 - avoid one-off `scp` for screenshots and clipboard images
 - keep one paste shortcut for local and SSH shells
 
+## Other terminals
+
+Ghostty and WezTerm have separate remote-paste integrations. See the
+[setup and limitations](integrations/README.md). Ghostty uses explicit pane
+registration and a macOS shortcut; WezTerm uses an SSH hook and a Lua keybinding.
+The iTerm quick start below remains unchanged.
+
 ## Requirements
 
 - macOS
