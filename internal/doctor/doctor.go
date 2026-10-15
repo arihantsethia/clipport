@@ -19,9 +19,10 @@ import (
 )
 
 type Check struct {
-	Name   string
-	OK     bool
-	Detail string
+	Name    string
+	OK      bool
+	Skipped bool
+	Detail  string
 }
 
 func Run(configPath, socketPath string) []Check {
@@ -39,13 +40,16 @@ func Run(configPath, socketPath string) []Check {
 		return checks
 	}
 	checks = append(checks, Check{Name: "config", OK: true, Detail: configPath})
-	forwardAddr := installedHTTPAddr()
+	forwardAddr := cfg.Local.HTTPAddr
+	if forwardAddr == "" {
+		forwardAddr = installedHTTPAddr()
+	}
 	for _, host := range cfg.Hosts {
 		for _, route := range host.SortedRoutes() {
 			name := fmt.Sprintf("ssh %s/%s", host.Name, route.Name)
 			checks = append(checks, Check{Name: name, OK: remote.Probe(route.SSHTarget), Detail: route.SSHTarget})
 			checks = append(checks, checkRemoteTmp(host.Name, route))
-			checks = append(checks, checkRemoteForward(host.Name, route, forwardAddr))
+			checks = append(checks, checkConfiguredRemoteForward(host.Name, route, forwardAddr, cfg.Local.SSHConfigPath))
 		}
 	}
 	return checks
@@ -91,6 +95,8 @@ func Print(checks []Check) {
 		mark := "ok"
 		if !c.OK {
 			mark = "fail"
+		} else if c.Skipped {
+			mark = "skip"
 		}
 		if c.Detail == "" {
 			fmt.Printf("%-4s %s\n", mark, c.Name)

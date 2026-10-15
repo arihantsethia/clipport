@@ -51,6 +51,12 @@ func Uninstall(configPath, machine, sshConfigPath string, removeRemoteToken bool
 }
 
 func setup(configPath, machine, sshConfigPath, tokenPath string, port int, d deps) (Result, error) {
+	if port == 0 {
+		port = 18765
+	}
+	if port < 1 || port > 65535 {
+		return Result{}, fmt.Errorf("port must be between 1 and 65535")
+	}
 	machine = strings.TrimSpace(machine)
 	if machine == "" {
 		return Result{}, fmt.Errorf("machine is required")
@@ -63,18 +69,24 @@ func setup(configPath, machine, sshConfigPath, tokenPath string, port int, d dep
 	if !ok {
 		return Result{}, fmt.Errorf("host %q not found in config", machine)
 	}
+	result := Result{Machine: host.Name}
+	routes := host.SortedRoutes()
+	for _, route := range routes {
+		if err := sshsetup.ValidateHostAlias(route.SSHTarget); err != nil {
+			return result, fmt.Errorf("route %q target %q cannot be used for SSH config setup; use an SSH config alias as ssh_target: %w", route.Name, route.SSHTarget, err)
+		}
+	}
 	bearer, err := d.loadToken(tokenPath)
 	if err != nil {
 		return Result{}, err
 	}
-	result := Result{Machine: host.Name}
-	for _, route := range host.SortedRoutes() {
+	for _, route := range routes {
 		routeResult := RouteResult{
 			Name:   route.Name,
 			Target: route.SSHTarget,
 		}
-		if err := sshsetup.ValidateHostAlias(route.SSHTarget); err != nil {
-			return result, fmt.Errorf("route %q target %q cannot be used for SSH config setup; use an SSH config alias as ssh_target: %w", route.Name, route.SSHTarget, err)
+		if err := d.installShims(route.SSHTarget, bearer, port); err != nil {
+			return result, fmt.Errorf("install shims for route %q (%s), after %d completed route(s); this route's local forwarding was not changed: %w", route.Name, route.SSHTarget, len(result.Routes), err)
 		}
 		_, err := d.installForward(sshConfigPath, route.SSHTarget, port)
 		switch {
@@ -83,10 +95,7 @@ func setup(configPath, machine, sshConfigPath, tokenPath string, port int, d dep
 		case errors.Is(err, sshsetup.ErrForwardAlreadyInstalled):
 			routeResult.ForwardStatus = "already present"
 		default:
-			return result, fmt.Errorf("install forward for route %q (%s): %w", route.Name, route.SSHTarget, err)
-		}
-		if err := d.installShims(route.SSHTarget, bearer, port); err != nil {
-			return result, fmt.Errorf("install shims for route %q (%s): %w", route.Name, route.SSHTarget, err)
+			return result, fmt.Errorf("install forward for route %q (%s), after remote shims were installed and %d route(s) completed: %w", route.Name, route.SSHTarget, len(result.Routes), err)
 		}
 		result.Routes = append(result.Routes, routeResult)
 	}

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"flag"
 	"fmt"
@@ -288,11 +289,11 @@ func main() {
 			fmt.Fprintf(os.Stderr, "clipctl: %v\n", err)
 			os.Exit(1)
 		}
-		if err := maybeRestartInstalledApp(config.LoadLocalBestEffort, *output, func(name string, args ...string) error {
-			return exec.Command(name, args...).Run()
-		}, os.Getuid()); err != nil {
-			fmt.Fprintf(os.Stderr, "clipctl: warning: could not restart Clipport: %v\n", err)
+		if err := finishOnboarding(*output, *socketPath); err != nil {
+			fmt.Fprintf(os.Stderr, "clipctl: onboarding incomplete: %v; configuration was saved. Check /tmp/clipport.err.log and /tmp/clipportd.err.log, then rerun clipctl onboard\n", err)
+			os.Exit(1)
 		}
+		fmt.Fprintln(os.Stdout, "Clipport is ready. Open a new SSH connection in iTerm to use the session hook.")
 	case "install-record":
 		installCmd := flag.NewFlagSet("install-record", flag.ExitOnError)
 		configPath := installCmd.String("config", doctor.DefaultConfigPath(), "clipport config path")
@@ -1080,7 +1081,16 @@ func (c appProcessCleaner) waitThenKill(pids []int) error {
 }
 
 func listClipportPIDs() ([]int, error) {
-	out, err := exec.Command("pgrep", "-x", "clipport").Output()
+	return listClipportPIDsContext(context.Background())
+}
+
+func listClipportPIDsContext(ctx context.Context) ([]int, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	cmd := exec.CommandContext(ctx, "pgrep", "-x", "clipport")
+	cmd.WaitDelay = 100 * time.Millisecond
+	out, err := cmd.Output()
 	if err != nil {
 		if exit, ok := err.(*exec.ExitError); ok && exit.ExitCode() == 1 {
 			return nil, nil
@@ -1099,7 +1109,16 @@ func listClipportPIDs() ([]int, error) {
 }
 
 func executablePathForPID(pid int) (string, error) {
-	out, err := exec.Command("lsof", "-p", strconv.Itoa(pid), "-a", "-d", "txt", "-Fn").Output()
+	return executablePathForPIDContext(context.Background(), pid)
+}
+
+func executablePathForPIDContext(ctx context.Context, pid int) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	cmd := exec.CommandContext(ctx, "lsof", "-p", strconv.Itoa(pid), "-a", "-d", "txt", "-Fn")
+	cmd.WaitDelay = 100 * time.Millisecond
+	out, err := cmd.Output()
 	if err != nil {
 		return "", err
 	}

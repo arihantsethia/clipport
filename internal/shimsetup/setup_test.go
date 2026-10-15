@@ -190,3 +190,89 @@ func TestSetupRequiresLogicalHostName(t *testing.T) {
 		t.Fatalf("err = %q, want %q", err, want)
 	}
 }
+
+func TestSetupRefusesConflictBeforeChangingForward(t *testing.T) {
+	cfg := &config.Config{Hosts: []config.Host{{Name: "devbox", Routes: []config.Route{{Name: "lan", SSHTarget: "devbox-lan"}}}}}
+	_, err := setup("", "devbox", "", "", 18765, deps{
+		loadConfig:   func(string) (*config.Config, error) { return cfg, nil },
+		loadToken:    func(string) (string, error) { return "client_B", nil },
+		installShims: func(string, string, int) error { return fmt.Errorf("remote token differs") },
+		installForward: func(string, string, int) (string, error) {
+			t.Fatal("forward changed before token conflict was resolved")
+			return "", nil
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "local forwarding was not changed") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestSetupValidatesEveryAliasBeforeAnyInstallation(t *testing.T) {
+	cfg := &config.Config{Hosts: []config.Host{{Name: "devbox", Routes: []config.Route{{Name: "first", SSHTarget: "devbox-lan", Priority: 1}, {Name: "bad", SSHTarget: "user@host", Priority: 2}}}}}
+	_, err := setup("", "devbox", "", "", 18765, deps{
+		loadConfig:   func(string) (*config.Config, error) { return cfg, nil },
+		loadToken:    func(string) (string, error) { t.Fatal("created token before validating routes"); return "", nil },
+		installShims: func(string, string, int) error { t.Fatal("installed before validating all routes"); return nil },
+		installForward: func(string, string, int) (string, error) {
+			t.Fatal("changed SSH config before validating all routes")
+			return "", nil
+		},
+	})
+	if err == nil {
+		t.Fatal("expected invalid alias failure")
+	}
+}
+
+func TestSetupReportsPartialRouteFailure(t *testing.T) {
+	cfg := &config.Config{Hosts: []config.Host{{Name: "devbox", Routes: []config.Route{{Name: "first", SSHTarget: "first", Priority: 1}, {Name: "second", SSHTarget: "second", Priority: 2}}}}}
+	var calls []string
+	result, err := setup("", "devbox", "", "", 18765, deps{
+		loadConfig: func(string) (*config.Config, error) { return cfg, nil },
+		loadToken:  func(string) (string, error) { return "client_A", nil },
+		installShims: func(target, token string, port int) error {
+			calls = append(calls, "shim:"+target)
+			if target == "second" {
+				return fmt.Errorf("conflict")
+			}
+			return nil
+		},
+		installForward: func(path, target string, port int) (string, error) {
+			calls = append(calls, "forward:"+target)
+			return "", nil
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "after 1 completed route(s)") {
+		t.Fatalf("partial completion missing: %v", err)
+	}
+	if len(result.Routes) != 1 || !reflect.DeepEqual(calls, []string{"shim:first", "forward:first", "shim:second"}) {
+		t.Fatalf("unexpected operations: %v, result: %#v", calls, result)
+	}
+}
+
+func TestSetupRejectsInvalidPortBeforeLoadingState(t *testing.T) {
+	for _, port := range []int{-1, 65536} {
+		_, err := setup("", "devbox", "", "", port, deps{})
+		if err == nil || !strings.Contains(err.Error(), "port must") {
+			t.Fatalf("invalid port accepted: %v", err)
+		}
+	}
+}
+
+func TestSetupReportsForwardFailureAfterRemoteInstallation(t *testing.T) {
+	cfg := &config.Config{Hosts: []config.Host{{Name: "devbox", Routes: []config.Route{{Name: "lan", SSHTarget: "devbox-lan"}}}}}
+	installed := false
+	_, err := setup("", "devbox", "", "", 18765, deps{
+		loadConfig:   func(string) (*config.Config, error) { return cfg, nil },
+		loadToken:    func(string) (string, error) { return "client_A", nil },
+		installShims: func(string, string, int) error { installed = true; return nil },
+		installForward: func(string, string, int) (string, error) {
+			if !installed {
+				t.Fatal("forward installed before remote validation")
+			}
+			return "", fmt.Errorf("write failed")
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "after remote shims were installed") {
+		t.Fatalf("partial remote change missing: %v", err)
+	}
+}

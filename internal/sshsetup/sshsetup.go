@@ -88,10 +88,6 @@ func InstallSessionHook(configPath, host, machine, clipctlBin string) (string, e
 	if err != nil {
 		return "", err
 	}
-	marker := "# clipport session begin " + host
-	if hasExactLine(data, marker) {
-		return "", nil
-	}
 	block := fmt.Sprintf(
 		"\n# clipport session begin %s\nHost %s\n    PermitLocalCommand yes\n    LocalCommand %s session register --machine %s --session-key \"${TERM_SESSION_ID:-}\" --ssh-alias %s --ssh-host %s --ssh-port %s --ssh-user %s\n# clipport session end %s\n",
 		host,
@@ -104,7 +100,17 @@ func InstallSessionHook(configPath, host, machine, clipctlBin string) (string, e
 		shellQuote("%r"),
 		host,
 	)
-	return writeConfigWithBackup(configPath, data, append(data, []byte(block)...))
+	updated, err := reconcileSessionBlock(string(data), host, block)
+	if err != nil {
+		return "", err
+	}
+	if err := validateSessionHook(configPath, host, updated, block); err != nil {
+		return "", err
+	}
+	if updated == string(data) {
+		return "", nil
+	}
+	return writeConfigWithBackup(configPath, data, []byte(updated))
 }
 
 func RemoveForward(configPath, host string) (string, error) {

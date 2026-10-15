@@ -3,7 +3,7 @@
 This is the maintainer map for Clipport. Update it when runtime behavior, file
 layout, security boundaries, or install behavior changes.
 
-Last updated: 2026-04-29
+Last updated: 2026-10-15
 
 ## 1. Project Structure
 
@@ -69,7 +69,7 @@ flowchart LR
   http --> daemon
 ```
 
-There are two primary paths:
+There are three primary paths:
 
 - `clipctl paste` over a local Unix socket for iTerm paste.
 - `clipport` supervises `clipportd` and uses the same Unix socket for
@@ -218,7 +218,11 @@ clear operational need.
 2. Daemon resolves the session to a machine.
 3. Clipboard provider selects image data and runs `pngpaste -`.
 4. Route manager chooses a route.
-5. Uploader runs remote `mkdir -p <dir> && cat > <path>` through SSH.
+5. Uploader runs a private-write script through SSH: it sets `umask 077`,
+   creates or validates directories under `/tmp/clipport`, rejects symlinks and
+   foreign ownership, tightens owned directories to `0700`, and writes with
+   no-clobber semantics. New files have mode `0600`; existing files are not
+   overwritten.
 6. Daemon returns `Response{Path: ...}`.
 7. CLI prints the path.
 
@@ -240,7 +244,22 @@ filesystem.
 5. Daemon returns clipboard bytes as `text/plain; charset=utf-8` or
    `image/png`.
 
-This path is separate from `clipctl paste`.
+This path is separate from `clipctl paste`. Wrappers installed in
+`~/.local/bin` require remote `curl` and a suitable `PATH`; setup does not change
+shell startup files. Successful reads return raw clipboard bytes, without
+implementing the full `wl-paste` or `xclip` command-line interfaces.
+
+The remote account has one token and wrapper installation. The forwarded
+loopback port is also a shared server resource. Simultaneous multi-client shim
+use is not supported; separate remote accounts do not isolate the port.
+
+Remote setup uses a bounded lock and requires an existing token to be a readable
+regular file, not a symlink, with exactly matching bytes. A mismatch preserves
+the existing token and wrappers. Same-token setup can repair owned wrappers,
+but unrelated clipboard commands are not replaced. Each route's guarded remote
+installation precedes its local forwarding edit. Failures after an earlier
+successful step report partial completion; setup is not a cross-route
+transaction.
 
 ## 5. State And Storage
 
@@ -299,6 +318,20 @@ OpenSSH owns SSH behavior. Clipport must not reimplement `Port`,
 - creates `~/Applications/Clipport.app`
 - writes or updates local install settings in `~/.config/clipport/config.toml`
 - does not prompt, onboard, or start anything
+
+`clipctl onboard` records install settings, configures the selected hosts,
+repairs managed SSH hooks, and starts or restarts the installed app. Effective
+hook settings are checked with `ssh -G` before saving; conflicting user-owned
+SSH settings are not overwritten. Startup and readiness share a 15-second
+deadline. Readiness requires the daemon to report the selected hosts and the
+authenticated HTTP health endpoint to succeed. Startup failure returns a nonzero
+exit status while preserving the saved configuration for a retry.
+
+`clipctl doctor` inspects each route's effective `ssh -G` configuration. An
+unconfigured optional clipboard forward is marked `skip`; a configured forward
+receives a real health check. SSH-config inspection errors still fail. Doctor
+is a diagnostic report, not an automated success gate: failed checks do not
+change its exit status.
 
 Daemon runtime:
 
