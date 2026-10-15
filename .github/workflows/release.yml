@@ -96,6 +96,8 @@ jobs:
                       raise SystemExit('Tag already has a draft/prerelease; review it manually')
                   print('Stable release already published; nothing to change')
                   raise SystemExit(0)
+          # Check all existing tags before enforcing monotonicity for a new release.
+          for release in releases:
               if not release['draft'] and not release['prerelease'] and re.fullmatch(r'v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)', release['tag_name']):
                   if version(release['tag_name']) >= version(tag):
                       raise SystemExit('Refusing to make an older version the latest release')

@@ -33,6 +33,10 @@ jobs:
           go-version-file: go.mod
           cache: true
 
+      - name: Release workflow regression tests
+        if: hashFiles('tests/test_release_workflow.py') != ''
+        run: python3 -m unittest discover -s tests -p 'test_*.py'
+
       - name: gofmt
         run: |
           files="$(git ls-files '*.go' | xargs gofmt -l)"
