@@ -349,6 +349,25 @@ CLIPPORT_HTTP=127.0.0.1:18800 ./install.sh
 
 ## Update
 
+For Homebrew installs, use Homebrew to install the latest published stable release:
+
+```bash
+brew update
+brew upgrade arihantsethia/tap/clipport
+clipctl restart
+```
+
+The tap checks for new releases hourly and updates only after macOS source and
+formula tests pass. GitHub may delay scheduled runs. Maintainers can also run
+[Update Clipport](https://github.com/arihantsethia/homebrew-tap/actions/workflows/update-clipport.yml)
+manually. Each stable version has a versioned source URL and SHA-256 checksum.
+
+For unreleased development changes, opt in with
+`brew install --HEAD arihantsethia/tap/clipport`. Refresh an existing HEAD install
+with `brew upgrade --fetch-HEAD arihantsethia/tap/clipport`, then `clipctl restart`.
+
+For manual/source installs only:
+
 ```bash
 clipctl update
 ```
@@ -438,3 +457,7 @@ Report security issues using [SECURITY.md](SECURITY.md).
 ## License
 
 Clipport is released under the [MIT License](LICENSE).
+
+## Releases
+
+See [RELEASING.md](RELEASING.md) for the tested tag-to-release and Homebrew update process.

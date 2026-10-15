@@ -1,0 +1,125 @@
+name: Release
+
+on:
+  push:
+    branches: [main]
+    paths: [VERSION]
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing stable tag to test and publish (vMAJOR.MINOR.PATCH)
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: clipport-release
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.release.outputs.tag }}
+      commit: ${{ steps.release.outputs.commit }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Resolve stable tag on main
+        id: release
+        env:
+          RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          if [[ "$GITHUB_EVENT_NAME" == push && "$GITHUB_REF" == refs/heads/main ]]; then
+            RELEASE_TAG="$(cat VERSION)"
+            commit="$(git rev-parse HEAD)"
+          else
+            commit="$(git rev-parse --verify "refs/tags/${RELEASE_TAG}^{commit}")"
+          fi
+          if [[ ! "$RELEASE_TAG" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+            echo 'Expected a stable vMAJOR.MINOR.PATCH tag' >&2
+            exit 1
+          fi
+          git merge-base --is-ancestor "$commit" origin/main
+          printf 'tag=%s\ncommit=%s\n' "$RELEASE_TAG" "$commit" >> "$GITHUB_OUTPUT"
+
+  verify:
+    needs: prepare
+    uses: ./.github/workflows/go.yml
+    with:
+      ref: ${{ needs.prepare.outputs.commit }}
+
+  publish:
+    needs: [prepare, verify]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Publish tested stable release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
+          RELEASE_COMMIT: ${{ needs.prepare.outputs.commit }}
+        run: |
+          # No checkout or upstream code execution in this write-enabled job.
+          status="$(gh api "repos/$GH_REPO/compare/$RELEASE_COMMIT...main" --jq .status)"
+          [[ "$status" == ahead || "$status" == identical ]]
+          gh api "repos/$GH_REPO/git/matching-refs/tags/$RELEASE_TAG" > "$RUNNER_TEMP/refs.json"
+          if python3 - <<'PYTAG'
+          import json, os
+          refs = json.load(open(os.environ['RUNNER_TEMP'] + '/refs.json'))
+          expected = 'refs/tags/' + os.environ['RELEASE_TAG']
+          raise SystemExit(0 if any(ref['ref'] == expected for ref in refs) else 1)
+          PYTAG
+          then
+            actual="$(gh api "repos/$GH_REPO/commits/$RELEASE_TAG" --jq .sha)"
+            test "$actual" = "$RELEASE_COMMIT"
+            echo 'EXISTING_TAG=true' >> "$GITHUB_ENV"
+          fi
+          gh api --paginate --slurp "repos/$GH_REPO/releases?per_page=100" > "$RUNNER_TEMP/releases.json"
+          python3 - <<'PY'
+          import json, os, re
+          pages = json.load(open(os.environ['RUNNER_TEMP'] + '/releases.json'))
+          releases = [release for page in pages for release in page]
+          tag = os.environ['RELEASE_TAG']
+          def version(value):
+              return tuple(map(int, value[1:].split('.')))
+          for release in releases:
+              if release['tag_name'] == tag:
+                  if release['draft'] or release['prerelease']:
+                      raise SystemExit('Tag already has a draft/prerelease; review it manually')
+                  print('Stable release already published; nothing to change')
+                  raise SystemExit(0)
+          # Check all existing tags before enforcing monotonicity for a new release.
+          for release in releases:
+              if not release['draft'] and not release['prerelease'] and re.fullmatch(r'v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)', release['tag_name']):
+                  if version(release['tag_name']) >= version(tag):
+                      raise SystemExit('Refusing to make an older version the latest release')
+          with open(os.environ['GITHUB_ENV'], 'a') as output:
+              output.write('CREATE_RELEASE=true\n')
+          PY
+      - name: Create release
+        if: env.CREATE_RELEASE == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
+          RELEASE_COMMIT: ${{ needs.prepare.outputs.commit }}
+        run: |
+          if [[ "${EXISTING_TAG:-false}" != true ]]; then
+            # Atomic create fails if another publisher has created this tag.
+            gh api --method POST "repos/$GH_REPO/git/refs" \
+              -f "ref=refs/tags/$RELEASE_TAG" -f "sha=$RELEASE_COMMIT"
+          fi
+          actual="$(gh api "repos/$GH_REPO/commits/$RELEASE_TAG" --jq .sha)"
+          test "$actual" = "$RELEASE_COMMIT"
+          gh release create "$RELEASE_TAG" --verify-tag --generate-notes --latest
+          actual="$(gh api "repos/$GH_REPO/commits/$RELEASE_TAG" --jq .sha)"
+          test "$actual" = "$RELEASE_COMMIT"
+          gh release view "$RELEASE_TAG" --json tagName,isDraft,isPrerelease,url
