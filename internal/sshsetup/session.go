@@ -12,7 +12,7 @@ import (
 
 // Replace only this alias's managed block, at its original position. OpenSSH
 // uses the first obtained option, so moving a hook can override user settings.
-func reconcileSessionBlock(text, host, block string) (string, error) {
+func updateSessionBlock(text, host, block string) (string, error) {
 	begin, end := "# clipport session begin "+host, "# clipport session end "+host
 	var out strings.Builder
 	inside, found := false, false
@@ -89,4 +89,52 @@ func validateSessionHook(configPath, host, updated, block string) error {
 		return fmt.Errorf("SSH settings for %s override the Clipport session hook; review LocalCommand and PermitLocalCommand in %s and its Include files (no changes saved)", host, configPath)
 	}
 	return nil
+}
+
+func InstallSessionHook(configPath, host, machine, clipctlBin string) (string, error) {
+	if err := ValidateHostAlias(host); err != nil {
+		return "", err
+	}
+	machine = strings.TrimSpace(machine)
+	if machine == "" {
+		return "", fmt.Errorf("machine is required")
+	}
+	clipctlBin = strings.TrimSpace(clipctlBin)
+	if clipctlBin == "" {
+		return "", fmt.Errorf("clipctl binary path is required")
+	}
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		return "", err
+	}
+	block := fmt.Sprintf(
+		"\n# clipport session begin %s\nHost %s\n    PermitLocalCommand yes\n    LocalCommand %s session register --machine %s --session-key \"${TERM_SESSION_ID:-}\" --ssh-alias %s --ssh-host %s --ssh-port %s --ssh-user %s\n# clipport session end %s\n",
+		host,
+		host,
+		shellQuote(clipctlBin),
+		shellQuote(machine),
+		shellQuote("%n"),
+		shellQuote("%h"),
+		shellQuote("%p"),
+		shellQuote("%r"),
+		host,
+	)
+	updated, err := updateSessionBlock(string(data), host, block)
+	if err != nil {
+		return "", err
+	}
+	if err := validateSessionHook(configPath, host, updated, block); err != nil {
+		return "", err
+	}
+	if updated == string(data) {
+		return "", nil
+	}
+	return writeConfigWithBackup(configPath, data, []byte(updated))
+}
+
+func RemoveSessionHook(configPath, host string) (string, error) {
+	if err := ValidateHostAlias(host); err != nil {
+		return "", err
+	}
+	return removeMarkedBlocks(configPath, "# clipport session begin "+host, "# clipport session end "+host)
 }

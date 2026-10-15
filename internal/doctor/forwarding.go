@@ -9,9 +9,10 @@ import (
 	"time"
 
 	"github.com/arihantsethia/clipport/internal/config"
+	"github.com/arihantsethia/clipport/internal/remote"
 )
 
-func readEffectiveSSHConfig(path, target string) (string, error) {
+func readSSHConfig(path, target string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	args := []string{"-G"}
@@ -23,13 +24,13 @@ func readEffectiveSSHConfig(path, target string) (string, error) {
 	return string(out), err
 }
 
-func checkConfiguredRemoteForward(hostName string, route config.Route, addr, sshConfigPath string) Check {
+func checkForward(hostName string, route config.Route, addr, sshConfigPath string) Check {
 	name := fmt.Sprintf("forward %s/%s", hostName, route.Name)
-	effective, err := readEffectiveSSHConfig(sshConfigPath, route.SSHTarget)
+	effective, err := readSSHConfig(sshConfigPath, route.SSHTarget)
 	if err != nil {
 		return Check{Name: name, Detail: fmt.Sprintf("cannot inspect SSH forwarding configuration: %v", err)}
 	}
-	remoteAddr, configured, err := clipboardForwardAddress(effective, addr)
+	remoteAddr, configured, err := forwardAddress(effective, addr)
 	if err != nil {
 		return Check{Name: name, Detail: err.Error()}
 	}
@@ -43,7 +44,7 @@ func checkConfiguredRemoteForward(hostName string, route config.Route, addr, ssh
 // through a tunnel unless its destination is the expected local loopback HTTP
 // endpoint. A different remote port is supported, but a conflicting forwarding
 // rule is an error rather than an optional skip or an authenticated probe.
-func clipboardForwardAddress(effective, addr string) (string, bool, error) {
+func forwardAddress(effective, addr string) (string, bool, error) {
 	_, port, err := net.SplitHostPort(addr)
 	if err != nil {
 		return "", false, fmt.Errorf("invalid clipboard HTTP address: %w", err)
@@ -89,4 +90,14 @@ func clipboardForwardAddress(effective, addr string) (string, bool, error) {
 		return "", true, fmt.Errorf("clipboard forward uses a non-loopback remote address; review SSH RemoteForward")
 	}
 	return net.JoinHostPort(host, remotePort), true, nil
+}
+
+var checkForwardHealth = remote.CheckForwardHealth
+
+func checkRemoteForward(hostName string, route config.Route, addr string) Check {
+	name := fmt.Sprintf("forward %s/%s", hostName, route.Name)
+	if err := checkForwardHealth(route.SSHTarget, addr); err != nil {
+		return Check{Name: name, OK: false, Detail: fmt.Sprintf("%v; reconnect SSH for this host", err)}
+	}
+	return Check{Name: name, OK: true, Detail: fmt.Sprintf("remote can reach %s", addr)}
 }

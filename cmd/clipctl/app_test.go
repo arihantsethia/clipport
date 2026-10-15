@@ -10,12 +10,12 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"syscall"
 	"testing"
 	"time"
 
 	"github.com/arihantsethia/clipport/internal/config"
 	"github.com/arihantsethia/clipport/internal/daemon"
+	"github.com/arihantsethia/clipport/internal/uninstall"
 )
 
 func TestStartAndWaitForAppStopsOnStartupFailure(t *testing.T) {
@@ -30,7 +30,7 @@ func TestWaitForAppReadyRetriesDelayedDaemon(t *testing.T) {
 	attempts := 0
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
-	err := waitForAppReady(ctx, time.Millisecond, func(ctx context.Context) error {
+	err := waitForApp(ctx, time.Millisecond, "readiness", func(ctx context.Context) error {
 		if _, ok := ctx.Deadline(); !ok {
 			t.Fatal("probe has no deadline")
 		}
@@ -48,7 +48,7 @@ func TestWaitForAppReadyRetriesDelayedDaemon(t *testing.T) {
 func TestWaitForAppReadyReportsLastFailureAtDeadline(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
 	defer cancel()
-	err := waitForAppReady(ctx, time.Millisecond, func(context.Context) error { return errors.New("HTTP health: 401 Unauthorized") })
+	err := waitForApp(ctx, time.Millisecond, "readiness", func(context.Context) error { return errors.New("HTTP health: 401 Unauthorized") })
 	if !errors.Is(err, context.DeadlineExceeded) || !strings.Contains(err.Error(), "401 Unauthorized") {
 		t.Fatalf("err=%v", err)
 	}
@@ -240,7 +240,7 @@ func TestOnboardingStopAcceptsFreshInstallLaunchctlError(t *testing.T) {
 		if name != "launchctl" || args[0] != "bootout" {
 			t.Fatalf("unexpected command %s %v", name, args)
 		}
-		return runOnboardingCommand(ctx, "sh", "-c", "printf 'Boot-out failed: 5: Input/output error\\n' >&2; exit 5")
+		return runCommand(ctx, "sh", "-c", "printf 'Boot-out failed: 5: Input/output error\\n' >&2; exit 5")
 	}, func([]string) error { cleaned = true; return nil }, 501)
 	if err != nil || !cleaned {
 		t.Fatalf("err=%v cleanup=%v", err, cleaned)
@@ -248,43 +248,264 @@ func TestOnboardingStopAcceptsFreshInstallLaunchctlError(t *testing.T) {
 }
 
 func TestOnboardingCommandPreservesRealStartupFailure(t *testing.T) {
-	err := runOnboardingCommand(context.Background(), "sh", "-c", "printf 'operation not permitted' >&2; exit 5")
+	err := runCommand(context.Background(), "sh", "-c", "printf 'operation not permitted' >&2; exit 5")
 	if err == nil || isLaunchctlNotLoaded(err) || !strings.Contains(err.Error(), "operation not permitted") {
 		t.Fatalf("err=%v", err)
 	}
 }
 
-func TestOnboardingCleanupGracePeriodHonorsCancellation(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	signals := 0
-	cleaner := appProcessCleaner{
-		listClipportPIDs: func() ([]int, error) { return []int{123}, nil },
-		executablePath:   func(int) (string, error) { return "/expected/clipport", nil },
-		signal: func(_ int, sig syscall.Signal) error {
-			signals++
-			if sig != syscall.SIGTERM {
-				t.Fatal("sent kill after cancellation")
-			}
+func TestStartInstalledAppBootstrapsAndKickstarts(t *testing.T) {
+	var calls []string
+	err := startInstalledApp(
+		func(string) (config.LocalConfig, error) {
+			return config.LocalConfig{AppLaunchdPlistPath: "/tmp/com.clipport.app.plist"}, nil
+		},
+		"",
+		func(name string, args ...string) error {
+			calls = append(calls, strings.Join(append([]string{name}, args...), " "))
 			return nil
 		},
-		isRunning:    func(int) bool { cancel(); return true },
-		waitInterval: time.Second,
-		waitTimeout:  time.Second,
+		501,
+	)
+	if err != nil {
+		t.Fatal(err)
 	}
-	err := cleanAppProcessesContext(ctx, cleaner, []string{"/expected/clipport"})
-	if !errors.Is(err, context.Canceled) || signals != 1 {
-		t.Fatalf("err=%v signals=%d", err, signals)
+	want := []string{
+		"launchctl bootstrap gui/501 /tmp/com.clipport.app.plist",
+		"launchctl kickstart -k gui/501/" + uninstall.AppLaunchdLabel,
+	}
+	if strings.Join(calls, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("calls = %q, want %q", calls, want)
 	}
 }
 
-func TestOnboardingCleanupCommandsHonorCancellation(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-	if _, err := listClipportPIDsContext(ctx); !errors.Is(err, context.Canceled) {
-		t.Fatalf("pgrep err=%v", err)
+func TestStartInstalledAppIgnoresAlreadyLoadedBootstrapError(t *testing.T) {
+	var calls []string
+	err := startInstalledApp(
+		func(string) (config.LocalConfig, error) {
+			return config.LocalConfig{AppLaunchdPlistPath: "/tmp/com.clipport.app.plist"}, nil
+		},
+		"",
+		func(name string, args ...string) error {
+			call := strings.Join(append([]string{name}, args...), " ")
+			calls = append(calls, call)
+			if strings.Contains(call, "bootstrap") {
+				return errors.New("service already loaded")
+			}
+			return nil
+		},
+		501,
+	)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if _, err := executablePathForPIDContext(ctx, os.Getpid()); !errors.Is(err, context.Canceled) {
-		t.Fatalf("lsof err=%v", err)
+	if len(calls) != 2 || !strings.Contains(calls[1], "kickstart") {
+		t.Fatalf("calls = %q", calls)
+	}
+}
+
+func TestStartInstalledAppReturnsRealBootstrapError(t *testing.T) {
+	err := startInstalledApp(
+		func(string) (config.LocalConfig, error) {
+			return config.LocalConfig{AppLaunchdPlistPath: "/tmp/com.clipport.app.plist"}, nil
+		},
+		"",
+		func(name string, args ...string) error {
+			if len(args) > 0 && args[0] == "bootstrap" {
+				return errors.New("invalid plist")
+			}
+			return nil
+		},
+		501,
+	)
+	if err == nil || !strings.Contains(err.Error(), "invalid plist") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestStopInstalledAppBootsOut(t *testing.T) {
+	var calls []string
+	err := stopInstalledApp(
+		func(string) (config.LocalConfig, error) {
+			return config.LocalConfig{
+				BinDir:              "/tmp/bin",
+				AppLaunchdPlistPath: "/tmp/com.clipport.app.plist",
+				AppPath:             "/tmp/Clipport.app",
+			}, nil
+		},
+		"",
+		func(name string, args ...string) error {
+			calls = append(calls, strings.Join(append([]string{name}, args...), " "))
+			return nil
+		},
+		func([]string) error { return nil },
+		501,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{
+		"launchctl bootout gui/501 /tmp/com.clipport.app.plist",
+	}
+	if strings.Join(calls, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("calls = %q, want %q", calls, want)
+	}
+}
+
+func TestStopInstalledAppCleansInstalledClipportProcesses(t *testing.T) {
+	var cleaned []string
+	err := stopInstalledApp(
+		func(string) (config.LocalConfig, error) {
+			return config.LocalConfig{
+				BinDir:              "/tmp/bin",
+				AppLaunchdPlistPath: "/tmp/com.clipport.app.plist",
+				AppPath:             "/tmp/Clipport.app",
+			}, nil
+		},
+		"",
+		func(name string, args ...string) error { return nil },
+		func(paths []string) error {
+			cleaned = append(cleaned, paths...)
+			return nil
+		},
+		501,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"/tmp/Clipport.app/Contents/MacOS/clipport", "/tmp/bin/clipport"}
+	if strings.Join(cleaned, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("cleaned = %q, want %q", cleaned, want)
+	}
+}
+
+func TestStopInstalledAppIgnoresNotLoadedError(t *testing.T) {
+	err := stopInstalledApp(
+		func(string) (config.LocalConfig, error) {
+			return config.LocalConfig{AppLaunchdPlistPath: "/tmp/com.clipport.app.plist"}, nil
+		},
+		"",
+		func(name string, args ...string) error {
+			return errors.New("service not loaded")
+		},
+		func([]string) error { return nil },
+		501,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestStopInstalledAppReturnsRealBootoutError(t *testing.T) {
+	err := stopInstalledApp(
+		func(string) (config.LocalConfig, error) {
+			return config.LocalConfig{AppLaunchdPlistPath: "/tmp/com.clipport.app.plist"}, nil
+		},
+		"",
+		func(name string, args ...string) error {
+			return errors.New("permission denied")
+		},
+		func([]string) error { return nil },
+		501,
+	)
+	if err == nil || !strings.Contains(err.Error(), "permission denied") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestStopInstalledAppCleansWhenLaunchAgentPlistIsMissing(t *testing.T) {
+	var cleaned []string
+	missingPlist := filepath.Join(t.TempDir(), "missing.plist")
+	err := stopInstalledApp(
+		func(string) (config.LocalConfig, error) {
+			return config.LocalConfig{
+				BinDir:              "/tmp/bin",
+				AppLaunchdPlistPath: missingPlist,
+				AppPath:             "/tmp/Clipport.app",
+			}, nil
+		},
+		"",
+		func(name string, args ...string) error {
+			return errors.New("exit status 5: Boot-out failed: 5: Input/output error")
+		},
+		func(paths []string) error {
+			cleaned = append(cleaned, paths...)
+			return nil
+		},
+		501,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"/tmp/Clipport.app/Contents/MacOS/clipport", "/tmp/bin/clipport"}
+	if strings.Join(cleaned, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("cleaned = %q, want %q", cleaned, want)
+	}
+}
+
+func TestRestartInstalledAppCleansStaleProcessesBeforeBootstrap(t *testing.T) {
+	var calls []string
+	err := relaunchApp(
+		config.LocalConfig{
+			BinDir:              "/tmp/bin",
+			AppLaunchdPlistPath: "/tmp/com.clipport.app.plist",
+			AppPath:             "/tmp/Clipport.app",
+		},
+		func(name string, args ...string) error {
+			calls = append(calls, strings.Join(append([]string{name}, args...), " "))
+			return nil
+		},
+		func(paths []string) error {
+			calls = append(calls, "cleanup "+strings.Join(paths, ","))
+			return nil
+		},
+		501,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{
+		"launchctl bootout gui/501 /tmp/com.clipport.app.plist",
+		"cleanup /tmp/Clipport.app/Contents/MacOS/clipport,/tmp/bin/clipport",
+		"launchctl bootstrap gui/501 /tmp/com.clipport.app.plist",
+		"launchctl kickstart -k gui/501/" + uninstall.AppLaunchdLabel,
+	}
+	if strings.Join(calls, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("calls = %q, want %q", calls, want)
+	}
+}
+
+func TestRestartInstalledAppIgnoresStaleBootoutError(t *testing.T) {
+	var calls []string
+	err := relaunchApp(
+		config.LocalConfig{
+			BinDir:              "/tmp/bin",
+			AppLaunchdPlistPath: "/tmp/com.clipport.app.plist",
+			AppPath:             "/tmp/Clipport.app",
+		},
+		func(name string, args ...string) error {
+			calls = append(calls, strings.Join(append([]string{name}, args...), " "))
+			if len(calls) == 1 {
+				return errors.New("exit status 5: Boot-out failed: 5: Input/output error")
+			}
+			return nil
+		},
+		func(paths []string) error {
+			calls = append(calls, "cleanup "+strings.Join(paths, ","))
+			return nil
+		},
+		501,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{
+		"launchctl bootout gui/501 /tmp/com.clipport.app.plist",
+		"cleanup /tmp/Clipport.app/Contents/MacOS/clipport,/tmp/bin/clipport",
+		"launchctl bootstrap gui/501 /tmp/com.clipport.app.plist",
+		"launchctl kickstart -k gui/501/" + uninstall.AppLaunchdLabel,
+	}
+	if strings.Join(calls, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("calls = %q, want %q", calls, want)
 	}
 }

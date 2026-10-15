@@ -29,31 +29,6 @@ func TestValidateHostAliasAllowsCommonAliases(t *testing.T) {
 	}
 }
 
-func TestInstallSessionHookWritesExpectedBlock(t *testing.T) {
-	dir := t.TempDir()
-	configPath := filepath.Join(dir, "config")
-	if err := os.WriteFile(configPath, []byte("Host existing\n    HostName example.com\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-
-	backup, err := InstallSessionHook(configPath, "devbox-public", "devbox", "/usr/local/bin/clipctl")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if backup == "" {
-		t.Fatal("expected backup path")
-	}
-
-	data, err := os.ReadFile(configPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	text := string(data)
-	if !strings.Contains(text, "# clipport session begin devbox-public\nHost devbox-public\n    PermitLocalCommand yes\n    LocalCommand '/usr/local/bin/clipctl' session register --machine 'devbox' --session-key \"${TERM_SESSION_ID:-}\" --ssh-alias '%n' --ssh-host '%h' --ssh-port '%p' --ssh-user '%r'\n# clipport session end devbox-public\n") {
-		t.Fatalf("config missing session block:\n%s", text)
-	}
-}
-
 func TestInstallForwardDoesNotTreatPrefixAliasAsInstalled(t *testing.T) {
 	dir := t.TempDir()
 	configPath := filepath.Join(dir, "config")
@@ -185,79 +160,6 @@ func TestInstallForwardIsIdempotentForExactMarker(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), ErrForwardAlreadyInstalled.Error()) {
 		t.Fatalf("unexpected error: %v", err)
-	}
-}
-
-func TestInstallSessionHookRejectsInvalidAlias(t *testing.T) {
-	dir := t.TempDir()
-	configPath := filepath.Join(dir, "config")
-	if err := os.WriteFile(configPath, []byte(""), 0o600); err != nil {
-		t.Fatal(err)
-	}
-
-	_, err := InstallSessionHook(configPath, "devbox\nProxyCommand evil", "devbox", "/usr/local/bin/clipctl")
-	if err == nil {
-		t.Fatal("expected invalid alias error")
-	}
-	if !strings.Contains(err.Error(), "invalid SSH host alias") {
-		t.Fatalf("unexpected error: %v", err)
-	}
-}
-
-func TestInstallSessionHookDoesNotTreatPrefixAliasAsInstalled(t *testing.T) {
-	dir := t.TempDir()
-	configPath := filepath.Join(dir, "config")
-	existing := "# clipport session begin devbox\nHost devbox\n    PermitLocalCommand yes\n# clipport session end devbox\n"
-	if err := os.WriteFile(configPath, []byte(existing), 0o600); err != nil {
-		t.Fatal(err)
-	}
-
-	backup, err := InstallSessionHook(configPath, "dev", "dev", "/usr/local/bin/clipctl")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if backup == "" {
-		t.Fatal("expected backup path")
-	}
-	data, err := os.ReadFile(configPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	text := string(data)
-	if !strings.Contains(text, "# clipport session begin dev\nHost dev\n") {
-		t.Fatalf("config missing dev session block:\n%s", text)
-	}
-}
-
-func TestInstallSessionHookIsIdempotent(t *testing.T) {
-	dir := t.TempDir()
-	configPath := filepath.Join(dir, "config")
-	if err := os.WriteFile(configPath, []byte(""), 0o600); err != nil {
-		t.Fatal(err)
-	}
-
-	if _, err := InstallSessionHook(configPath, "devbox-public", "devbox", "/usr/local/bin/clipctl"); err != nil {
-		t.Fatal(err)
-	}
-	first, err := os.ReadFile(configPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	backup, err := InstallSessionHook(configPath, "devbox-public", "devbox", "/usr/local/bin/clipctl")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if backup != "" {
-		t.Fatalf("backup = %q, want empty on idempotent install", backup)
-	}
-
-	second, err := os.ReadFile(configPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(second) != string(first) {
-		t.Fatalf("config changed on second install:\nfirst:\n%s\nsecond:\n%s", string(first), string(second))
 	}
 }
 

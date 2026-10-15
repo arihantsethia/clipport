@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
@@ -17,6 +18,7 @@ import (
 	"github.com/arihantsethia/clipport/internal/config"
 	"github.com/arihantsethia/clipport/internal/daemon"
 	"github.com/arihantsethia/clipport/internal/token"
+	"github.com/arihantsethia/clipport/internal/uninstall"
 )
 
 func finishOnboarding(configPath, socketPath string) error {
@@ -25,7 +27,7 @@ func finishOnboarding(configPath, socketPath string) error {
 		return fmt.Errorf("load saved configuration: %w", err)
 	}
 	if cfg.Local.AppLaunchdPlistPath == "" {
-		return fmt.Errorf("app installation is not recorded; install Clipport before running onboarding")
+		return errors.New("app installation is not recorded; install Clipport before running onboarding")
 	}
 	addr := cfg.Local.HTTPAddr
 	if addr == "" {
@@ -43,17 +45,17 @@ func finishOnboarding(configPath, socketPath string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	run := func(name string, args ...string) error {
-		return runOnboardingCommand(ctx, name, args...)
+		return runCommand(ctx, name, args...)
 	}
 	return startAndWaitForApp(ctx, func() error {
 		return stopThenStartApp(ctx, func() error {
 			return stopInstalledApp(config.LoadLocalBestEffort, configPath, run, func(paths []string) error {
-				return cleanupOnboardingProcesses(ctx, paths)
+				return cleanupAppProcesses(ctx, paths)
 			}, os.Getuid())
 		}, func(ctx context.Context) error {
 			return probeDaemonStopped(ctx, socketPath, addr)
 		}, func() error {
-			return startInstalledAppWithLocal(cfg.Local, run, os.Getuid())
+			return launchApp(cfg.Local, run, os.Getuid())
 		})
 	}, func(ctx context.Context) error {
 		return probeAppReady(ctx, socketPath, addr, token.DefaultPath(), expectedHosts)
@@ -64,14 +66,10 @@ func startAndWaitForApp(ctx context.Context, start func() error, probe func(cont
 	if err := start(); err != nil {
 		return fmt.Errorf("start Clipport: %w", err)
 	}
-	return waitForAppReady(ctx, 100*time.Millisecond, probe)
+	return waitForApp(ctx, 100*time.Millisecond, "readiness", probe)
 }
 
-func waitForAppReady(ctx context.Context, interval time.Duration, probe func(context.Context) error) error {
-	return waitForAppState(ctx, interval, "readiness", probe)
-}
-
-func waitForAppState(ctx context.Context, interval time.Duration, state string, probe func(context.Context) error) error {
+func waitForApp(ctx context.Context, interval time.Duration, state string, probe func(context.Context) error) error {
 	var lastErr error
 	for {
 		if err := ctx.Err(); err != nil {
@@ -118,14 +116,14 @@ func probeAppReady(ctx context.Context, socketPath, addr, tokenPath string, expe
 		return fmt.Errorf("daemon status: %s", response.Error)
 	}
 	if !sameHosts(response.Status.ConfigHosts, expectedHosts) {
-		return fmt.Errorf("daemon has not loaded the selected hosts")
+		return errors.New("daemon has not loaded the selected hosts")
 	}
 	bearer, err := token.Load(tokenPath)
 	if err != nil {
 		return fmt.Errorf("HTTP token: %w", err)
 	}
 	if bearer == "" {
-		return fmt.Errorf("HTTP token is empty")
+		return errors.New("HTTP token is empty")
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+addr+"/v1/health", nil)
 	if err != nil {
@@ -151,7 +149,7 @@ func probeAppReady(ctx context.Context, socketPath, addr, tokenPath string, expe
 		return fmt.Errorf("HTTP health response: %w", err)
 	}
 	if health.OK != "true" {
-		return fmt.Errorf("HTTP endpoint did not report ready")
+		return errors.New("HTTP endpoint did not report ready")
 	}
 	return nil
 }
@@ -182,7 +180,7 @@ func stopThenStartApp(ctx context.Context, stop func() error, stopped func(conte
 	if err := stop(); err != nil {
 		return fmt.Errorf("stop previous app: %w", err)
 	}
-	if err := waitForAppState(ctx, 100*time.Millisecond, "previous daemon shutdown", stopped); err != nil {
+	if err := waitForApp(ctx, 100*time.Millisecond, "previous daemon shutdown", stopped); err != nil {
 		return err
 	}
 	return start()
@@ -202,7 +200,7 @@ func probeDaemonStopped(ctx context.Context, socketPath, addr string) error {
 	return nil
 }
 
-func runOnboardingCommand(ctx context.Context, name string, args ...string) error {
+func runCommand(ctx context.Context, name string, args ...string) error {
 	cmd := exec.CommandContext(ctx, name, args...)
 	cmd.WaitDelay = 100 * time.Millisecond
 	out, err := cmd.CombinedOutput()
@@ -215,36 +213,93 @@ func runOnboardingCommand(ctx context.Context, name string, args ...string) erro
 	return nil
 }
 
-func cleanupOnboardingProcesses(ctx context.Context, paths []string) error {
-	cleaner := newAppProcessCleaner()
-	cleaner.listClipportPIDs = func() ([]int, error) { return listClipportPIDsContext(ctx) }
-	cleaner.executablePath = func(pid int) (string, error) { return executablePathForPIDContext(ctx, pid) }
-	return cleanAppProcessesContext(ctx, cleaner, paths)
-}
-
-func cleanAppProcessesContext(ctx context.Context, cleaner appProcessCleaner, paths []string) error {
-	if err := ctx.Err(); err != nil {
+func startInstalledApp(loadLocal func(string) (config.LocalConfig, error), configPath string, run func(name string, args ...string) error, uid int) error {
+	local, err := resolvedLocalSettings(loadLocal, configPath)
+	if err != nil {
 		return err
 	}
-	running, signal := cleaner.isRunning, cleaner.signal
-	cleaner.isRunning = func(pid int) bool { return ctx.Err() == nil && running(pid) }
-	cleaner.signal = func(pid int, sig syscall.Signal) error {
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		return signal(pid, sig)
+	return launchApp(local, run, uid)
+}
+
+func launchApp(local config.LocalConfig, run func(name string, args ...string) error, uid int) error {
+	guiDomain := fmt.Sprintf("gui/%d", uid)
+	if err := run("launchctl", "bootstrap", guiDomain, local.AppLaunchdPlistPath); err != nil && !isLaunchctlAlreadyLoaded(err) {
+		return err
 	}
-	cleaner.sleep = func(delay time.Duration) {
-		timer := time.NewTimer(delay)
-		defer timer.Stop()
-		select {
-		case <-ctx.Done():
-		case <-timer.C:
-		}
+	return run("launchctl", "kickstart", "-k", fmt.Sprintf("%s/%s", guiDomain, uninstall.AppLaunchdLabel))
+}
+
+func stopInstalledApp(loadLocal func(string) (config.LocalConfig, error), configPath string, run func(name string, args ...string) error, cleanup func([]string) error, uid int) error {
+	local, err := resolvedLocalSettings(loadLocal, configPath)
+	if err != nil {
+		return err
 	}
-	err := cleaner.clean(paths)
-	if ctx.Err() != nil {
-		return ctx.Err()
+	guiDomain := fmt.Sprintf("gui/%d", uid)
+	if err := run("launchctl", "bootout", guiDomain, local.AppLaunchdPlistPath); err != nil && !isLaunchctlNotLoaded(err) && !isMissingLaunchAgentPlist(err, local.AppLaunchdPlistPath) {
+		return err
 	}
-	return err
+	return cleanup(appProcessPaths(local))
+}
+
+func restartInstalledApp(loadLocal func(string) (config.LocalConfig, error), configPath string, run func(name string, args ...string) error, uid int) error {
+	local, err := resolvedLocalSettings(loadLocal, configPath)
+	if err != nil {
+		return err
+	}
+	return relaunchApp(local, run, cleanupInstalledAppProcesses, uid)
+}
+
+func relaunchApp(local config.LocalConfig, run func(name string, args ...string) error, cleanup func([]string) error, uid int) error {
+	guiDomain := fmt.Sprintf("gui/%d", uid)
+	if err := run("launchctl", "bootout", guiDomain, local.AppLaunchdPlistPath); err != nil && !isLaunchctlNotLoaded(err) && !isMissingLaunchAgentPlist(err, local.AppLaunchdPlistPath) {
+		return err
+	}
+	if err := cleanup(appProcessPaths(local)); err != nil {
+		return err
+	}
+	if err := run("launchctl", "bootstrap", guiDomain, local.AppLaunchdPlistPath); err != nil {
+		return err
+	}
+	return run("launchctl", "kickstart", "-k", fmt.Sprintf("gui/%d/%s", uid, uninstall.AppLaunchdLabel))
+}
+
+func appProcessPaths(local config.LocalConfig) []string {
+	var paths []string
+	if local.AppPath != "" {
+		paths = append(paths, filepath.Join(local.AppPath, "Contents", "MacOS", "clipport"))
+	}
+	if local.BinDir != "" {
+		paths = append(paths, filepath.Join(local.BinDir, "clipport"))
+	}
+	return paths
+}
+
+func isLaunchctlAlreadyLoaded(err error) bool {
+	if err == nil {
+		return false
+	}
+	text := strings.ToLower(err.Error())
+	return strings.Contains(text, "already loaded") || strings.Contains(text, "already bootstrapped")
+}
+
+func isLaunchctlNotLoaded(err error) bool {
+	if err == nil {
+		return false
+	}
+	text := strings.ToLower(err.Error())
+	return strings.Contains(text, "not loaded") ||
+		strings.Contains(text, "could not find service") ||
+		strings.Contains(text, "no such process") ||
+		(strings.Contains(text, "boot-out failed: 5") && strings.Contains(text, "input/output error"))
+}
+
+func isMissingLaunchAgentPlist(err error, path string) bool {
+	if err == nil || path == "" {
+		return false
+	}
+	if !strings.Contains(strings.ToLower(err.Error()), "input/output error") {
+		return false
+	}
+	_, statErr := os.Stat(path)
+	return errors.Is(statErr, os.ErrNotExist)
 }
