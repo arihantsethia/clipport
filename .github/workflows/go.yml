@@ -49,7 +49,7 @@ jobs:
         run: go test ./...
 
       - name: race tests
-        run: go test -race ./internal/daemon ./internal/terminal ./internal/remote
+        run: go test -race ./internal/daemon ./internal/terminal ./internal/remote ./internal/doctor ./internal/shims ./internal/shimsetup ./internal/sshsetup ./cmd/clipctl
 
       - name: go vet
         run: go vet ./...
@@ -58,3 +58,34 @@ jobs:
         run: |
           go build ./cmd/clipctl ./cmd/clipportd
           CGO_ENABLED=1 go build -o /tmp/clipport-menu-check ./cmd/clipport
+
+  verify-linux:
+    name: Linux remote shim safety
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Install isolated SSH test dependency
+        run: |
+          if [ ! -x /usr/sbin/sshd ]; then
+            sudo apt-get update
+            sudo apt-get install -y openssh-server
+          fi
+
+      - name: Test remote shim safety
+        env:
+          CLIPPORT_SSH_INTEGRATION: "1"
+        run: go test -race ./internal/shims ./internal/shimsetup ./internal/sshsetup
+
+      - name: Vet portable components
+        run: go vet ./internal/shims ./internal/shimsetup ./internal/sshsetup

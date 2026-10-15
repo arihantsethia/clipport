@@ -19,9 +19,10 @@ import (
 )
 
 type Check struct {
-	Name   string
-	OK     bool
-	Detail string
+	Name    string
+	OK      bool
+	Skipped bool
+	Detail  string
 }
 
 func Run(configPath, socketPath string) []Check {
@@ -39,19 +40,20 @@ func Run(configPath, socketPath string) []Check {
 		return checks
 	}
 	checks = append(checks, Check{Name: "config", OK: true, Detail: configPath})
-	forwardAddr := installedHTTPAddr()
+	forwardAddr := cfg.Local.HTTPAddr
+	if forwardAddr == "" {
+		forwardAddr = installedHTTPAddr()
+	}
 	for _, host := range cfg.Hosts {
 		for _, route := range host.SortedRoutes() {
 			name := fmt.Sprintf("ssh %s/%s", host.Name, route.Name)
 			checks = append(checks, Check{Name: name, OK: remote.Probe(route.SSHTarget), Detail: route.SSHTarget})
 			checks = append(checks, checkRemoteTmp(host.Name, route))
-			checks = append(checks, checkRemoteForward(host.Name, route, forwardAddr))
+			checks = append(checks, checkForward(host.Name, route, forwardAddr, cfg.Local.SSHConfigPath))
 		}
 	}
 	return checks
 }
-
-var checkForwardHealth = remote.CheckForwardHealth
 
 func checkHTTP() Check {
 	bearer, err := token.Load("")
@@ -91,6 +93,8 @@ func Print(checks []Check) {
 		mark := "ok"
 		if !c.OK {
 			mark = "fail"
+		} else if c.Skipped {
+			mark = "skip"
 		}
 		if c.Detail == "" {
 			fmt.Printf("%-4s %s\n", mark, c.Name)
@@ -158,14 +162,6 @@ func checkRemoteTmp(hostName string, route config.Route) Check {
 		return Check{Name: name, OK: false, Detail: err.Error()}
 	}
 	return Check{Name: name, OK: true, Detail: "/tmp/clipport writable"}
-}
-
-func checkRemoteForward(hostName string, route config.Route, addr string) Check {
-	name := fmt.Sprintf("forward %s/%s", hostName, route.Name)
-	if err := checkForwardHealth(route.SSHTarget, addr); err != nil {
-		return Check{Name: name, OK: false, Detail: fmt.Sprintf("%v; reconnect SSH for this host", err)}
-	}
-	return Check{Name: name, OK: true, Detail: fmt.Sprintf("remote can reach %s", addr)}
 }
 
 func DefaultConfigPath() string {

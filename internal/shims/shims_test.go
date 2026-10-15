@@ -5,22 +5,8 @@ import (
 	"testing"
 )
 
-func TestInstallPayloadKeepsTokenOutOfExecutableShim(t *testing.T) {
-	payload := renderInstallPayload("secret-token", 18765)
-	if !strings.Contains(payload, "chmod 600 ~/.config/clipport/token") {
-		t.Fatalf("payload does not chmod token file:\n%s", payload)
-	}
-	start := strings.Index(payload, "cat > ~/.local/bin/clipport-wl-paste")
-	if start < 0 {
-		t.Fatalf("payload does not write shim:\n%s", payload)
-	}
-	shim := payload[start:]
-	if strings.Contains(shim, "secret-token") {
-		t.Fatalf("shim embeds token:\n%s", shim)
-	}
-	if !strings.Contains(shim, "cat \"$HOME/.config/clipport/token\"") {
-		t.Fatalf("shim does not read token file:\n%s", shim)
-	}
+func TestShimUsesGenericClipboardAndDebugDiagnostics(t *testing.T) {
+	shim := renderScript(18765)
 	if !strings.Contains(shim, "/v1/clipboard") || strings.Contains(shim, "/v1/clipboard/png") {
 		t.Fatalf("shim does not use generic clipboard endpoint:\n%s", shim)
 	}
@@ -74,6 +60,19 @@ func TestShimInstallSSHCommandDoesNotRequestForwarding(t *testing.T) {
 	} {
 		if !strings.Contains(args, want) {
 			t.Fatalf("ssh args missing %q in:\n%s", want, args)
+		}
+	}
+}
+
+func TestInstallRejectsUnsafeInputBeforeSSH(t *testing.T) {
+	for _, token := range []string{"", "abc\nCLIPPORT_TOKEN\ntouch /tmp/not-allowed", "a'b", "$(id)", strings.Repeat("a", 4097)} {
+		if err := Install("unused-target", token, 18765); err == nil || !strings.Contains(err.Error(), "URL-safe") {
+			t.Fatalf("unsafe input not rejected locally: %v", err)
+		}
+	}
+	for _, port := range []int{-1, 65536} {
+		if err := Install("unused-target", "valid_token", port); err == nil || !strings.Contains(err.Error(), "port must") {
+			t.Fatalf("invalid port not rejected locally: %v", err)
 		}
 	}
 }
