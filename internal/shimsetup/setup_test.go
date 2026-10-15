@@ -81,41 +81,6 @@ func TestSetupUsesLogicalHostAndSortedRoutes(t *testing.T) {
 	}
 }
 
-func TestSetupRejectsNonAliasRouteTarget(t *testing.T) {
-	cfg := &config.Config{
-		Hosts: []config.Host{
-			{
-				Name: "devbox",
-				Routes: []config.Route{
-					{Name: "lan", SSHTarget: "dev@192.0.2.10"},
-				},
-			},
-		},
-	}
-	_, err := setup("/tmp/config.toml", "devbox", "/tmp/ssh_config", "/tmp/token", 18765, deps{
-		loadConfig: func(path string) (*config.Config, error) {
-			return cfg, nil
-		},
-		loadToken: func(path string) (string, error) {
-			return "secret-token", nil
-		},
-		installForward: func(configPath, host string, remotePort int) (string, error) {
-			t.Fatal("installForward ran for non-alias route target")
-			return "", nil
-		},
-		installShims: func(target, token string, port int) error {
-			t.Fatal("installShims ran for non-alias route target")
-			return nil
-		},
-	})
-	if err == nil {
-		t.Fatal("expected non-alias route target error")
-	}
-	if !strings.Contains(err.Error(), `route "lan" target "dev@192.0.2.10" cannot be used for SSH config setup`) {
-		t.Fatalf("unexpected error: %v", err)
-	}
-}
-
 func TestSetupTreatsExistingForwardAsSuccess(t *testing.T) {
 	cfg := &config.Config{
 		Hosts: []config.Host{
@@ -208,18 +173,23 @@ func TestSetupRefusesConflictBeforeChangingForward(t *testing.T) {
 }
 
 func TestSetupValidatesEveryAliasBeforeAnyInstallation(t *testing.T) {
-	cfg := &config.Config{Hosts: []config.Host{{Name: "devbox", Routes: []config.Route{{Name: "first", SSHTarget: "devbox-lan", Priority: 1}, {Name: "bad", SSHTarget: "user@host", Priority: 2}}}}}
-	_, err := setup("", "devbox", "", "", 18765, deps{
-		loadConfig:   func(string) (*config.Config, error) { return cfg, nil },
-		loadToken:    func(string) (string, error) { t.Fatal("created token before validating routes"); return "", nil },
-		installShims: func(string, string, int) error { t.Fatal("installed before validating all routes"); return nil },
-		installForward: func(string, string, int) (string, error) {
-			t.Fatal("changed SSH config before validating all routes")
-			return "", nil
-		},
-	})
-	if err == nil {
-		t.Fatal("expected invalid alias failure")
+	for _, target := range []string{"user@host", "dev@192.0.2.10"} {
+		t.Run(target, func(t *testing.T) {
+			cfg := &config.Config{Hosts: []config.Host{{Name: "devbox", Routes: []config.Route{{Name: "first", SSHTarget: "devbox-lan", Priority: 1}, {Name: "bad", SSHTarget: target, Priority: 2}}}}}
+			_, err := setup("", "devbox", "", "", 18765, deps{
+				loadConfig:   func(string) (*config.Config, error) { return cfg, nil },
+				loadToken:    func(string) (string, error) { t.Fatal("created token before validating routes"); return "", nil },
+				installShims: func(string, string, int) error { t.Fatal("installed before validating all routes"); return nil },
+				installForward: func(string, string, int) (string, error) {
+					t.Fatal("changed SSH config before validating all routes")
+					return "", nil
+				},
+			})
+			want := fmt.Sprintf(`route "bad" target %q cannot be used for SSH config setup`, target)
+			if err == nil || !strings.Contains(err.Error(), want) {
+				t.Fatalf("unexpected invalid alias failure: %v", err)
+			}
+		})
 	}
 }
 

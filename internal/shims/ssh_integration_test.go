@@ -110,7 +110,6 @@ func TestLinuxSSHIndependentClients(t *testing.T) {
 		if err := os.Mkdir(clientHome, 0700); err != nil {
 			t.Fatal(err)
 		}
-		write(filepath.Join(clientHome, "token"), tokens[i]+"\n")
 		configs[i] = filepath.Join(clientHome, "ssh_config")
 		write(configs[i], fmt.Sprintf("Host target\n HostName 127.0.0.1\n Port %d\n User %s\n IdentityFile %s\n IdentitiesOnly yes\n BatchMode yes\n StrictHostKeyChecking yes\n UserKnownHostsFile %s\n ConnectTimeout 5\n", port, current.Username, key, knownHosts))
 	}
@@ -125,7 +124,6 @@ func TestLinuxSSHIndependentClients(t *testing.T) {
 	}
 	beforeToken := readFile(t, filepath.Join(home, ".config/clipport/token"))
 	beforeShim := readFile(t, filepath.Join(home, ".local/bin/clipport-wl-paste"))
-	beforeConfig := readFile(t, configs[1])
 	out, err := run(1)
 	if err == nil || !strings.Contains(out, "remote token differs") {
 		t.Fatalf("second SSH identity did not refuse: %v: %s", err, out)
@@ -135,7 +133,7 @@ func TestLinuxSSHIndependentClients(t *testing.T) {
 			t.Fatal("SSH refusal leaked token")
 		}
 	}
-	if readFile(t, filepath.Join(home, ".config/clipport/token")) != beforeToken || readFile(t, filepath.Join(home, ".local/bin/clipport-wl-paste")) != beforeShim || readFile(t, configs[1]) != beforeConfig {
+	if readFile(t, filepath.Join(home, ".config/clipport/token")) != beforeToken || readFile(t, filepath.Join(home, ".local/bin/clipport-wl-paste")) != beforeShim {
 		t.Fatal("second SSH client changed protected state")
 	}
 

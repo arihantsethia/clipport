@@ -131,64 +131,6 @@ func TestRepairMachineForSessionDoesNotUseDefaultHostForUnknownDetectedHost(t *t
 	}
 }
 
-func TestMaybeRestartInstalledAppRestartsRunningLaunchAgent(t *testing.T) {
-	var calls []string
-	err := maybeStartOrRestartInstalledApp(
-		config.LocalConfig{AppLaunchdPlistPath: "/tmp/com.clipport.app.plist"},
-		func(config.LocalConfig, int) (bool, error) { return true, nil },
-		func(name string, args ...string) error {
-			if name != "launchctl" {
-				t.Fatalf("name = %q", name)
-			}
-			calls = append(calls, strings.Join(append([]string{name}, args...), " "))
-			return nil
-		},
-		func([]string) error { return nil },
-		501,
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
-	want := []string{
-		"launchctl bootout gui/501 /tmp/com.clipport.app.plist",
-		"launchctl bootstrap gui/501 /tmp/com.clipport.app.plist",
-		"launchctl kickstart -k gui/501/" + uninstall.AppLaunchdLabel,
-	}
-	if strings.Join(calls, "\n") != strings.Join(want, "\n") {
-		t.Fatalf("calls = %q, want %q", calls, want)
-	}
-}
-
-func TestMaybeRestartInstalledAppStartsStoppedLaunchAgent(t *testing.T) {
-	var calls []string
-	err := maybeStartOrRestartInstalledApp(
-		config.LocalConfig{AppLaunchdPlistPath: "/tmp/com.clipport.app.plist"},
-		func(config.LocalConfig, int) (bool, error) { return false, nil },
-		func(name string, args ...string) error {
-			if name != "launchctl" {
-				t.Fatalf("name = %q", name)
-			}
-			calls = append(calls, strings.Join(append([]string{name}, args...), " "))
-			return nil
-		},
-		func([]string) error {
-			t.Fatal("did not expect process cleanup for stopped app")
-			return nil
-		},
-		501,
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
-	want := []string{
-		"launchctl bootstrap gui/501 /tmp/com.clipport.app.plist",
-		"launchctl kickstart -k gui/501/" + uninstall.AppLaunchdLabel,
-	}
-	if strings.Join(calls, "\n") != strings.Join(want, "\n") {
-		t.Fatalf("calls = %q, want %q", calls, want)
-	}
-}
-
 func TestStartInstalledAppBootstrapsAndKickstarts(t *testing.T) {
 	var calls []string
 	err := startInstalledApp(
@@ -512,27 +454,6 @@ func TestCleanupInstalledAppProcessesWaitsThenKillsStillRunningProcess(t *testin
 		if signals[i] != want[i] {
 			t.Fatalf("signals = %v, want %v", signals, want)
 		}
-	}
-}
-
-func TestMaybeRestartInstalledAppSkipsWhenLaunchAgentUnknown(t *testing.T) {
-	called := false
-	err := maybeRestartInstalledApp(
-		func(string) (config.LocalConfig, error) {
-			return config.LocalConfig{}, nil
-		},
-		"",
-		func(name string, args ...string) error {
-			called = true
-			return nil
-		},
-		501,
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if called {
-		t.Fatal("did not expect launchctl kickstart")
 	}
 }
 

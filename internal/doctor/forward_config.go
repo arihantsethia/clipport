@@ -11,7 +11,7 @@ import (
 	"github.com/arihantsethia/clipport/internal/config"
 )
 
-var readEffectiveSSHConfig = func(path, target string) (string, error) {
+func readEffectiveSSHConfig(path, target string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	args := []string{"-G"}

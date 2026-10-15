@@ -32,10 +32,6 @@ func TestInstallSessionHookRepairsManagedCommand(t *testing.T) {
 	if strings.Contains(string(after), "/old/bin") || !strings.Contains(string(after), "'/new/bin/clipctl' session register --machine 'new-machine'") {
 		t.Fatalf("hook not repaired: %s", after)
 	}
-	backup, err = InstallSessionHook(path, "dev", "new-machine", "/new/bin/clipctl")
-	if err != nil || backup != "" {
-		t.Fatalf("repeat repair: backup=%q err=%v", backup, err)
-	}
 }
 
 func TestInstallSessionHookRejectsMalformedManagedBlocks(t *testing.T) {

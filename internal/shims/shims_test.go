@@ -5,22 +5,8 @@ import (
 	"testing"
 )
 
-func TestInstallPayloadKeepsTokenOutOfExecutableShim(t *testing.T) {
-	payload := renderInstallPayload("secret-token", 18765)
-	if !strings.Contains(payload, "chmod 600 \"$token_path\"") {
-		t.Fatalf("payload does not chmod token file:\n%s", payload)
-	}
-	start := strings.Index(payload, "cat > \"$shim_tmp\"")
-	if start < 0 {
-		t.Fatalf("payload does not write shim:\n%s", payload)
-	}
-	shim := payload[start:]
-	if strings.Contains(shim, "secret-token") {
-		t.Fatalf("shim embeds token:\n%s", shim)
-	}
-	if !strings.Contains(shim, "cat \"$HOME/.config/clipport/token\"") {
-		t.Fatalf("shim does not read token file:\n%s", shim)
-	}
+func TestShimUsesGenericClipboardAndDebugDiagnostics(t *testing.T) {
+	shim := renderScript(18765)
 	if !strings.Contains(shim, "/v1/clipboard") || strings.Contains(shim, "/v1/clipboard/png") {
 		t.Fatalf("shim does not use generic clipboard endpoint:\n%s", shim)
 	}

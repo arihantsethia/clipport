@@ -907,28 +907,6 @@ func isLoopbackHTTPAddr(addr string) bool {
 	return ip != nil && ip.IsLoopback()
 }
 
-func maybeRestartInstalledApp(loadLocal func(string) (config.LocalConfig, error), configPath string, run func(name string, args ...string) error, uid int) error {
-	local, err := loadLocal(configPath)
-	if err != nil {
-		return nil
-	}
-	if local.AppLaunchdPlistPath == "" {
-		return nil
-	}
-	return maybeStartOrRestartInstalledApp(local, launchAgentLoaded, run, cleanupInstalledAppProcesses, uid)
-}
-
-func maybeStartOrRestartInstalledApp(local config.LocalConfig, isRunning func(config.LocalConfig, int) (bool, error), run func(name string, args ...string) error, cleanup func([]string) error, uid int) error {
-	running, err := isRunning(local, uid)
-	if err != nil {
-		return err
-	}
-	if running {
-		return restartInstalledAppWithLocal(local, run, cleanup, uid)
-	}
-	return startInstalledAppWithLocal(local, run, uid)
-}
-
 func startInstalledApp(loadLocal func(string) (config.LocalConfig, error), configPath string, run func(name string, args ...string) error, uid int) error {
 	local, err := resolvedLocalSettings(loadLocal, configPath)
 	if err != nil {
@@ -977,24 +955,6 @@ func restartInstalledAppWithLocal(local config.LocalConfig, run func(name string
 		return err
 	}
 	return run("launchctl", "kickstart", "-k", fmt.Sprintf("gui/%d/%s", uid, uninstall.AppLaunchdLabel))
-}
-
-func launchAgentLoaded(local config.LocalConfig, uid int) (bool, error) {
-	if local.AppLaunchdPlistPath == "" {
-		return false, nil
-	}
-	out, err := exec.Command("launchctl", "print", fmt.Sprintf("gui/%d/%s", uid, uninstall.AppLaunchdLabel)).CombinedOutput()
-	if err == nil {
-		return true, nil
-	}
-	text := strings.ToLower(strings.TrimSpace(string(out)))
-	if text == "" {
-		text = strings.ToLower(err.Error())
-	}
-	if strings.Contains(text, "could not find service") || strings.Contains(text, "not found") {
-		return false, nil
-	}
-	return false, err
 }
 
 func installedAppProcessPaths(local config.LocalConfig) []string {

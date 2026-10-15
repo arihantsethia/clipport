@@ -95,7 +95,7 @@ func TestProbeAppReadyUsesExplicitEndpointsAndToken(t *testing.T) {
 		want              string
 	}{
 		{"ready", "secret", `{"ok":"true"}`, 200, ""},
-		{"bad token", "wrong", "", 401, "401"},
+		{"unauthorized response", "wrong", "", 401, "401"},
 		{"not ready", "secret", `{"ok":"false"}`, 200, "did not report ready"},
 		{"bad health", "secret", "broken", 200, "HTTP health response"},
 		{"redirect", "secret", "", 302, "302"},
